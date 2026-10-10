@@ -807,7 +807,17 @@ fn localize_detail(lang: mtty_ui::i18n::Lang, text: &str) -> &str {
 /// values go through this: a tab or file could be named `idle` too.
 fn agent_state_label(lang: mtty_ui::i18n::Lang, state: &str) -> &str {
     if lang == mtty_ui::i18n::Lang::En {
-        return state;
+        return match state {
+            "processing" => "Working",
+            "idle" => "Idle",
+            "awaiting" => "Waiting for you",
+            "completed" => "Completed",
+            "incomplete" => "Paused · unfinished",
+            "waiting" => "Waiting for background work",
+            "unknown" => "Status unavailable",
+            "error" => "Failed",
+            _ => state,
+        };
     }
     match state {
         "processing" => "处理中",
@@ -14990,6 +15000,7 @@ fn file_tree_icon(
         icon: if is_dir { Icon::Folder } else { Icon::File },
         glyph: icons::rule_glyph(Some(rule), None, false),
         color: Some(color),
+        hint: None,
     }
 }
 
@@ -15221,8 +15232,9 @@ fn agent_icon(
     match state {
         "processing" => (Icon::StateBusy, Some(ch.accent)),
         "awaiting" => (Icon::StateWait, Some(ch.warning)),
-        "waiting" => (Icon::StateWait, Some(ch.accent)),
-        "incomplete" | "unknown" => (Icon::StateEmpty, Some(ch.warning)),
+        "waiting" => (Icon::StateBackground, Some(ch.accent)),
+        "incomplete" => (Icon::StatePaused, Some(ch.warning)),
+        "unknown" => (Icon::StateUnknown, Some(ch.muted)),
         "completed" => (Icon::StateFull, Some(ch.positive)),
         "error" => (Icon::StateFull, Some(ch.negative)),
         _ if attention == Some(Attention::Done) => (Icon::StateFull, Some(ch.positive)),
@@ -18356,6 +18368,18 @@ impl chrome::Chrome for State {
                 let view = self.view_for(t);
                 let mut icon = mtty_ui::icons::TabIcon::from(builtin);
                 icon.color = agent.and_then(|(_, color)| color);
+                icon.hint = self.mtp.agent_for(&t.active).and_then(|agent| {
+                    agent
+                        .get("state")
+                        .and_then(|state| state.as_str())
+                        .map(|state| {
+                            format!(
+                                "{}: {}",
+                                mtty_ui::i18n::t(self.lang, "Agent state", "助手状态"),
+                                agent_state_label(self.lang, state)
+                            )
+                        })
+                });
                 if let Some(rule) = view.as_ref().and_then(|v| v.icon.as_ref()) {
                     let color = rule.rgb();
                     icon.glyph = mtty_ui::icons::rule_glyph(
@@ -20023,7 +20047,12 @@ mod tests {
         assert_eq!(localize_detail(Lang::Zh, "tty"), "终端设备");
         assert_eq!(agent_state_label(Lang::Zh, "awaiting"), "等待你");
         assert_eq!(agent_state_label(Lang::Zh, "processing"), "处理中");
-        assert_eq!(agent_state_label(Lang::En, "idle"), "idle");
+        assert_eq!(agent_state_label(Lang::En, "idle"), "Idle");
+        assert_eq!(agent_state_label(Lang::En, "unknown"), "Status unavailable");
+        assert_eq!(
+            agent_state_label(Lang::En, "incomplete"),
+            "Paused · unfinished"
+        );
         assert_eq!(agent_state_label(Lang::Zh, "custom"), "custom");
         assert_eq!(
             localize_detail(Lang::Zh, "idle"),
@@ -20110,9 +20139,18 @@ mod tests {
         let ch = mtty_ui::theme::Chrome::dark();
         let shape = |state, attention| super::agent_icon(&ch, state, attention).0;
         assert_eq!(shape("completed", None), Icon::StateFull);
-        assert_eq!(shape("waiting", Some(Attention::Done)), Icon::StateWait);
-        assert_eq!(shape("incomplete", Some(Attention::Done)), Icon::StateEmpty);
-        assert_eq!(shape("unknown", Some(Attention::Done)), Icon::StateEmpty);
+        assert_eq!(
+            shape("waiting", Some(Attention::Done)),
+            Icon::StateBackground
+        );
+        assert_eq!(
+            shape("incomplete", Some(Attention::Done)),
+            Icon::StatePaused
+        );
+        assert_eq!(shape("unknown", Some(Attention::Done)), Icon::StateUnknown);
+        assert_eq!(super::agent_icon(&ch, "unknown", None).1, Some(ch.muted));
+        assert_ne!(shape("waiting", None), shape("awaiting", None));
+        assert_ne!(shape("incomplete", None), shape("unknown", None));
         assert_eq!(shape("processing", None), Icon::StateBusy);
         assert_eq!(shape("processing", Some(Attention::Done)), Icon::StateBusy);
         assert_eq!(shape("idle", Some(Attention::Done)), Icon::StateFull);
