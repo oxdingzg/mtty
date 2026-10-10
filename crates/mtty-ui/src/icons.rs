@@ -21,11 +21,14 @@ pub enum Icon {
     Command,
     Search,
     Refresh,
-    /// An agent's state, by shape (drawn, not a glyph): nothing going on,
-    /// executing, waiting for you, or finished (done/error).
+    /// Agent states are drawn as shapes, including distinct pause, clock and
+    /// question markers rather than using color alone to explain idle work.
     StateEmpty,
     StateBusy,
     StateWait,
+    StateBackground,
+    StatePaused,
+    StateUnknown,
     StateFull,
 }
 
@@ -52,6 +55,9 @@ pub fn glyph(icon: Icon) -> char {
         Icon::StateEmpty => '\u{25cb}',
         Icon::StateBusy => '\u{25d0}',
         Icon::StateWait => '\u{25c9}',
+        Icon::StateBackground => '\u{25f7}',
+        Icon::StatePaused => '\u{23f8}',
+        Icon::StateUnknown => '?',
         Icon::StateFull => '\u{25cf}',
     }
 }
@@ -61,7 +67,13 @@ pub fn draw(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::Color3
     let size = rect.height().min(rect.width()).max(8.0);
     if matches!(
         icon,
-        Icon::StateEmpty | Icon::StateBusy | Icon::StateWait | Icon::StateFull
+        Icon::StateEmpty
+            | Icon::StateBusy
+            | Icon::StateWait
+            | Icon::StateBackground
+            | Icon::StatePaused
+            | Icon::StateUnknown
+            | Icon::StateFull
     ) {
         draw_state(p, rect.center(), size * 0.36, icon, color);
         return;
@@ -95,8 +107,9 @@ pub fn draw(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::Color3
 }
 
 /// An agent-state marker of `radius` at `center`: an empty ring (idle), a
-/// rotating arc (executing), a ring with a filled core (waiting for you), or a
-/// solid disc (a finished turn, done or failed).
+/// rotating arc (executing), a ring with a filled core (waiting for you), a
+/// clock (background wait), pause bars (unfinished), question (unavailable),
+/// or a solid disc (a finished turn, done or failed).
 fn draw_state(
     p: &egui::Painter,
     center: egui::Pos2,
@@ -106,6 +119,31 @@ fn draw_state(
 ) {
     let stroke = egui::Stroke::new((radius / 3.0).max(1.3), color);
     match icon {
+        Icon::StatePaused => {
+            for offset in [-0.4, 0.4] {
+                p.line_segment(
+                    [
+                        center + radius * egui::vec2(offset, -0.8),
+                        center + radius * egui::vec2(offset, 0.8),
+                    ],
+                    stroke,
+                );
+            }
+        }
+        Icon::StateUnknown => {
+            p.text(
+                center,
+                egui::Align2::CENTER_CENTER,
+                "?",
+                egui::FontId::proportional(radius * 2.8),
+                color,
+            );
+        }
+        Icon::StateBackground => {
+            p.circle_stroke(center, radius, stroke);
+            p.line_segment([center, center + radius * egui::vec2(0.0, -0.6)], stroke);
+            p.line_segment([center, center + radius * egui::vec2(0.5, 0.2)], stroke);
+        }
         Icon::StateFull => {
             p.circle_filled(center, radius, color);
         }
@@ -161,6 +199,8 @@ pub struct TabIcon {
     pub icon: Icon,
     pub glyph: Option<String>,
     pub color: Option<crate::theme::Rgb>,
+    /// Localized explanation of the agent state, shared by tab and sidebar hover.
+    pub hint: Option<String>,
 }
 
 impl From<Icon> for TabIcon {
@@ -169,6 +209,7 @@ impl From<Icon> for TabIcon {
             icon,
             glyph: None,
             color: None,
+            hint: None,
         }
     }
 }

@@ -265,6 +265,10 @@ pub fn tab_bar(
             egui::Vec2::splat(14.0),
         );
         crate::icons::draw_tab_icon(ui.painter(), ir, &icon, text_color);
+        let resp = match icon.hint.as_deref() {
+            Some(hint) => resp.on_hover_text(format!("{title}\n{hint}")),
+            None => resp,
+        };
         let pos = rect.min + egui::vec2(22.0, (rect.height() - galley.size().y) * 0.5);
         ui.painter().galley(pos, galley, text_color);
         // Close affordance, inside the chip.
@@ -487,12 +491,19 @@ pub fn sidebar(
         }
         // Hover shows where the session is (its folder, file or host),
         // and the title in full when the row cuts it off.
-        let location = locations.get(i).filter(|l| !l.is_empty());
-        let resp = match (location, truncated) {
-            (Some(l), true) => resp.on_hover_text(format!("{title}\n{l}")),
-            (Some(l), false) => resp.on_hover_text(l.as_str()),
-            (None, true) => resp.on_hover_text(title),
-            (None, false) => resp,
+        let details = locations
+            .get(i)
+            .filter(|l| !l.is_empty())
+            .map(String::as_str)
+            .into_iter()
+            .chain(icon.hint.as_deref())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let resp = match (details.is_empty(), truncated) {
+            (false, true) => resp.on_hover_text(format!("{title}\n{details}")),
+            (false, false) => resp.on_hover_text(details),
+            (true, true) => resp.on_hover_text(title),
+            (true, false) => resp,
         };
         if ev.close != Some(i) && resp.clicked() {
             ev.switch = Some(i);
@@ -2119,6 +2130,66 @@ mod tab_menu_tests {
             });
         });
         (ev, output)
+    }
+
+    #[test]
+    fn tab_and_sidebar_hover_explain_the_agent_state() {
+        for vertical in [false, true] {
+            let ctx = test_ctx();
+            let mut icon = crate::icons::TabIcon::from(crate::icons::Icon::StatePaused);
+            icon.hint = Some("Agent state: Paused · unfinished".into());
+            let frame = |time, pointer: Option<egui::Pos2>| {
+                let mut ev = TabBarEvents::default();
+                let output = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(300.0, 400.0),
+                        )),
+                        time: Some(time),
+                        events: pointer.map(egui::Event::PointerMoved).into_iter().collect(),
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            ev = if vertical {
+                                sidebar(
+                                    ui,
+                                    &ChromeColors::dark(),
+                                    &["Task".into()],
+                                    &[icon.clone()],
+                                    &[None],
+                                    &[],
+                                    &["/workspace".into()],
+                                    &[],
+                                    0,
+                                    "Sessions",
+                                    Lang::En,
+                                )
+                            } else {
+                                tab_bar(
+                                    ui,
+                                    &ChromeColors::dark(),
+                                    &["Task".into()],
+                                    &[icon.clone()],
+                                    &[],
+                                    0,
+                                    Lang::En,
+                                )
+                            };
+                        });
+                    },
+                );
+                (ev, output)
+            };
+            let pointer = frame(0.0, None).0.tab_rects[0].center();
+            frame(0.1, Some(pointer));
+            frame(1.0, Some(pointer));
+            let output = frame(2.0, Some(pointer)).1;
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                egui::Shape::Text(text) if text.galley.job.text.contains("Agent state: Paused · unfinished")
+            )), "state explanation missing from hover (vertical={vertical})");
+        }
     }
 
     #[test]
