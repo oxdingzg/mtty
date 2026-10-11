@@ -1805,6 +1805,27 @@ enum PaneMenuAction {
     ClearScrollback,
 }
 
+/// An open details-panel context menu: the row it targets and where to draw.
+#[derive(Clone)]
+struct DetailsMenu {
+    path: std::path::PathBuf,
+    is_dir: bool,
+    /// The screen point (logical) the menu opens at.
+    at: (f32, f32),
+}
+
+/// One item of the details context menu, mapped to an action when run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DetailsMenuAction {
+    Open,
+    OpenDefault,
+    Reveal,
+    CopyPath,
+    CopyRelativePath,
+    NewTerminal,
+    ChangeDir,
+}
+
 /// Keep a context menu on screen: shift it left/up when it would run past the
 /// bottom-right, leaving a small margin.
 fn clamp_menu_pos(ctx: &egui::Context, at: (f32, f32)) -> (f32, f32) {
@@ -1850,6 +1871,8 @@ struct State {
     selection: Option<(String, Selection)>,
     /// A pane context menu open at a screen point, for a specific pane.
     pane_menu: Option<PaneMenu>,
+    /// A details-panel context menu open at a screen point (file tree row).
+    details_menu: Option<DetailsMenu>,
     dragging: bool,
     /// A file drag is hovering the window. The drop target is painted so the
     /// destination is visible before the file is released.
@@ -2870,6 +2893,7 @@ impl State {
         let ch = self.theme.chrome();
         let mut open_file = None;
         let mut toggle = None;
+        let mut menu = None;
         render_dir_tree(
             ui,
             &self.tree_children,
@@ -2880,7 +2904,11 @@ impl State {
             &ch,
             &mut open_file,
             &mut toggle,
+            &mut menu,
         );
+        if let Some((path, is_dir, at)) = menu {
+            self.details_menu = Some(DetailsMenu { path, is_dir, at });
+        }
         if let Some(d) = toggle {
             if !self.tree_expanded.insert(d.clone()) {
                 self.tree_expanded.remove(&d);
@@ -4231,6 +4259,7 @@ impl State {
         // Shared, host-agnostic chrome (menu/tabs/sidebar/details/status).
         chrome::render(ctx, self);
         self.pane_context_menu(ctx);
+        self.details_context_menu(ctx);
         self.live_markdown_panes(ctx);
         self.preview_panes(ctx);
         self.lsp_popups(ctx);
@@ -8183,6 +8212,138 @@ impl State {
                 }
             }
             self.run_pane_menu_action(action);
+        }
+    }
+
+    /// A right-click context menu for a details-panel file-tree row, drawn as
+    /// an egui popup. A file opens in the editor, the OS handler or a new
+    /// terminal; a directory can become the focused pane's working directory.
+    fn details_context_menu(&mut self, ctx: &egui::Context) {
+        let Some(menu) = self.details_menu.clone() else {
+            return;
+        };
+        use mtty_ui::i18n::t;
+        let lang = self.lang;
+        let clamped = clamp_menu_pos(ctx, menu.at);
+        let chosen: std::cell::Cell<Option<DetailsMenuAction>> = std::cell::Cell::new(None);
+        let mut open = true;
+        let mut menu_rect = egui::Rect::NOTHING;
+        egui::Area::new(egui::Id::new("details-context-menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(clamped.0, clamped.1))
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_min_width(190.0);
+                    let item = |ui: &mut egui::Ui, label: &str, action: DetailsMenuAction| {
+                        if ui.button(label).clicked() {
+                            chosen.set(Some(action));
+                        }
+                    };
+                    if menu.is_dir {
+                        item(
+                            ui,
+                            t(lang, "New Terminal Here", "在此新建终端"),
+                            DetailsMenuAction::NewTerminal,
+                        );
+                    } else {
+                        item(ui, t(lang, "Open", "打开"), DetailsMenuAction::Open);
+                        item(
+                            ui,
+                            t(lang, "Open with Default App", "用默认应用打开"),
+                            DetailsMenuAction::OpenDefault,
+                        );
+                    }
+                    item(
+                        ui,
+                        t(lang, "Change Directory Here", "切换到此目录"),
+                        DetailsMenuAction::ChangeDir,
+                    );
+                    ui.separator();
+                    item(
+                        ui,
+                        t(lang, "Reveal in File Manager", "在文件管理器中显示"),
+                        DetailsMenuAction::Reveal,
+                    );
+                    item(
+                        ui,
+                        t(lang, "Copy Path", "复制路径"),
+                        DetailsMenuAction::CopyPath,
+                    );
+                    item(
+                        ui,
+                        t(lang, "Copy Relative Path", "复制相对路径"),
+                        DetailsMenuAction::CopyRelativePath,
+                    );
+                });
+                menu_rect = ui.min_rect();
+            });
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            open = false;
+        }
+        // A primary press outside the menu dismisses it; the secondary press
+        // that opened it (or a press on an item) does not.
+        if ctx.input(|i| {
+            i.pointer.primary_pressed()
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|p| !menu_rect.contains(p))
+        }) {
+            open = false;
+        }
+        let action = chosen.get();
+        if action.is_some() {
+            open = false;
+        }
+        if !open {
+            self.details_menu = None;
+        }
+        if let Some(action) = action {
+            self.run_details_menu_action(action, &menu.path, menu.is_dir);
+        }
+    }
+
+    /// Run a details-panel menu action on a file-tree row.
+    fn run_details_menu_action(
+        &mut self,
+        action: DetailsMenuAction,
+        path: &std::path::Path,
+        is_dir: bool,
+    ) {
+        use DetailsMenuAction::*;
+        match action {
+            Open => {
+                self.open_editor(path.to_path_buf());
+            }
+            OpenDefault => open_external(&path.display().to_string()),
+            Reveal => reveal_external(path),
+            CopyPath => self.egui_ctx.copy_text(path.display().to_string()),
+            CopyRelativePath => {
+                let text = self
+                    .cwd()
+                    .and_then(|root| {
+                        path.strip_prefix(&root)
+                            .ok()
+                            .map(|p| p.display().to_string())
+                    })
+                    .unwrap_or_else(|| path.display().to_string());
+                self.egui_ctx.copy_text(text);
+            }
+            NewTerminal => self.new_tab_in(Some(path.to_path_buf())),
+            ChangeDir => {
+                // A directory changes to itself; a file changes to its parent.
+                let dir = if is_dir {
+                    path.to_path_buf()
+                } else {
+                    path.parent()
+                        .map(std::path::Path::to_path_buf)
+                        .unwrap_or_default()
+                };
+                if dir.as_os_str().is_empty() {
+                    return;
+                }
+                let cmd = format!("cd {}\r", shell_quote(&dir.display().to_string()));
+                self.write_input(cmd.as_bytes());
+            }
         }
     }
 
@@ -14894,6 +15055,7 @@ fn render_dir_tree(
     ch: &mtty_ui::theme::Chrome,
     open_file: &mut Option<std::path::PathBuf>,
     toggle: &mut Option<std::path::PathBuf>,
+    menu: &mut Option<(std::path::PathBuf, bool, (f32, f32))>,
 ) {
     let Some(entries) = children.get(dir) else {
         return;
@@ -14906,7 +15068,9 @@ fn render_dir_tree(
         }
         let path = dir.join(&e.name);
         let is_open = expanded.contains(&path);
+        let mut secondary = false;
         ui.horizontal(|ui| {
+            let top = ui.cursor().min;
             ui.add_space(depth as f32 * 12.0);
             // The disclosure triangle is itself clickable.
             let (ir, chev_resp) =
@@ -14917,6 +15081,7 @@ fn render_dir_tree(
                     *toggle = Some(path.clone());
                 }
             }
+            secondary |= chev_resp.secondary_clicked();
             let (ird, icon_resp) =
                 ui.allocate_exact_size(egui::Vec2::splat(14.0), egui::Sense::click());
             let icon = file_tree_icon(ch, &e.name, is_dir);
@@ -14928,16 +15093,19 @@ fn render_dir_tree(
                     *open_file = Some(path.clone());
                 }
             }
+            secondary |= icon_resp.secondary_clicked();
             // Right-to-left so the size hugs the edge, then the name fills
             // what is left and truncates: a long name must not widen the panel.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
                 if !is_dir {
-                    ui.label(
+                    let size = egui::Label::new(
                         egui::RichText::new(human_size(e.size))
                             .size(10.5)
                             .color(muted),
-                    );
+                    )
+                    .sense(egui::Sense::click());
+                    secondary |= ui.add(size).secondary_clicked();
                     ui.add_space(6.0);
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -14952,6 +15120,7 @@ fn render_dir_tree(
                         label
                     };
                     let resp = ui.selectable_label(false, label);
+                    secondary |= resp.secondary_clicked();
                     if resp.clicked() {
                         if is_dir {
                             *toggle = Some(path.clone());
@@ -14961,6 +15130,11 @@ fn render_dir_tree(
                     }
                 });
             });
+            // A secondary click on any part of the row opens its context menu,
+            // anchored at the row's top-left.
+            if secondary {
+                *menu = Some((path.clone(), is_dir, (top.x, top.y)));
+            }
         });
         if is_dir && is_open {
             render_dir_tree(
@@ -14973,6 +15147,7 @@ fn render_dir_tree(
                 ch,
                 open_file,
                 toggle,
+                menu,
             );
         }
     }
@@ -15193,6 +15368,27 @@ fn open_external(target: &str) {
     #[cfg(all(unix, not(target_os = "macos")))]
     let cmd = ("xdg-open", vec![target]);
     let _ = mtty_platform::background_command(cmd.0).args(cmd.1).spawn();
+}
+
+/// Reveal a path in the OS file manager (the containing folder, with the item
+/// selected where the platform supports it).
+fn reveal_external(target: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    let _ = mtty_platform::background_command("open")
+        .arg("-R")
+        .arg(target)
+        .spawn();
+    #[cfg(target_os = "windows")]
+    let _ = mtty_platform::background_command("explorer")
+        .arg(format!("/select,{}", target.display()))
+        .spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let folder = target.parent().unwrap_or(target);
+        let _ = mtty_platform::background_command("xdg-open")
+            .arg(folder)
+            .spawn();
+    }
 }
 
 fn quad(ox: f32, oy: f32, row: u16, col: u16, cw: f32, ch: f32, color: (u8, u8, u8)) -> Quad {
@@ -15465,6 +15661,7 @@ impl ApplicationHandler<HostEvent> for Host {
             mods: ModifiersState::empty(),
             selection: None,
             pane_menu: None,
+            details_menu: None,
             dragging: false,
             dropping: false,
             drag_paths: Vec::new(),
