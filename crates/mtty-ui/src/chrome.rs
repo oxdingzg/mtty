@@ -213,6 +213,28 @@ pub fn host_list(
     picked
 }
 
+/// Command reveals the same 1–9 targets as the macOS tab-selection shortcuts.
+/// Reuse the icon slot so holding the key never changes tab widths or hitboxes.
+fn draw_tab_indicator(
+    ui: &egui::Ui,
+    rect: egui::Rect,
+    icon: &crate::icons::TabIcon,
+    color: egui::Color32,
+    index: usize,
+) {
+    if index < 9 && ui.input(|i| i.focused && i.modifiers.mac_cmd) {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            (index + 1).to_string(),
+            egui::FontId::monospace(13.0),
+            color,
+        );
+        return;
+    }
+    crate::icons::draw_tab_icon(ui.painter(), rect, icon, color);
+}
+
 /// A horizontal tab bar: clickable, draggable labels, a close affordance, `+`.
 pub fn tab_bar(
     ui: &mut egui::Ui,
@@ -264,7 +286,7 @@ pub fn tab_bar(
             egui::pos2(rect.left() + 12.0, rect.center().y),
             egui::Vec2::splat(14.0),
         );
-        crate::icons::draw_tab_icon(ui.painter(), ir, &icon, text_color);
+        draw_tab_indicator(ui, ir, &icon, text_color, i);
         let resp = match icon.hint.as_deref() {
             Some(hint) => resp.on_hover_text(format!("{title}\n{hint}")),
             None => resp,
@@ -412,7 +434,7 @@ pub fn sidebar(
             egui::pos2(rect.left() + 12.0, rect.center().y),
             egui::Vec2::splat(14.0),
         );
-        crate::icons::draw_tab_icon(ui.painter(), ir, &icon, text_color);
+        draw_tab_indicator(ui, ir, &icon, text_color, i);
         if let Some(c) = badges.get(i).copied().flatten() {
             ui.painter().circle_filled(
                 egui::pos2(rect.left() + 26.0, rect.center().y),
@@ -1748,6 +1770,78 @@ mod tab_menu_tests {
         // A lone session has no close button.
         let ev = sidebar_frames(&titles[..1], &click_at(egui::pos2(212.0, y0 as f32)));
         assert_eq!(ev.close, None);
+    }
+
+    #[test]
+    fn command_tab_numbers_follow_modifier_focus_and_keep_tab_geometry() {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "tabler".into(),
+            egui::FontData::from_static(include_bytes!(
+                "../../../assets/fonts/tabler-icons-subset.ttf"
+            ))
+            .into(),
+        );
+        fonts.families.insert(
+            egui::FontFamily::Name("tabler".into()),
+            vec!["tabler".into()],
+        );
+        ctx.set_fonts(fonts);
+        let titles: Vec<String> = (1..=10).map(|i| format!("session {i}")).collect();
+        let icons = vec![crate::icons::Icon::Terminal.into(); titles.len()];
+        let mut normal_rects = Vec::new();
+        for (modifiers, focused, show_numbers) in [
+            (egui::Modifiers::NONE, true, false),
+            (egui::Modifiers::MAC_CMD, true, true),
+            (egui::Modifiers::MAC_CMD, false, false),
+            (egui::Modifiers::MAC_CMD, true, true),
+            (egui::Modifiers::NONE, true, false),
+            (egui::Modifiers::CTRL, true, false),
+        ] {
+            let mut rects = Vec::new();
+            let output = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1800.0, 100.0),
+                    )),
+                    modifiers,
+                    focused,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        rects =
+                            tab_bar(ui, &ChromeColors::dark(), &titles, &icons, &[], 0, Lang::En)
+                                .tab_rects;
+                    });
+                },
+            );
+            let numbers: Vec<String> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) if text.galley.job.text.parse::<usize>().is_ok() => {
+                        Some(text.galley.job.text.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                numbers,
+                if show_numbers {
+                    (1..=9).map(|i| i.to_string()).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                }
+            );
+            if normal_rects.is_empty() {
+                normal_rects = rects;
+                continue;
+            }
+            assert_eq!(rects, normal_rects);
+        }
     }
 
     #[test]
