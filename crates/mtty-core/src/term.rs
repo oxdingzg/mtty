@@ -763,6 +763,19 @@ impl Terminal {
                         changed = true;
                     }
                 }
+                mtty_graphics::StreamEvent::C1Terminator(raw) => {
+                    // vte's UTF-8 parser does not dispatch raw C1 ST. The
+                    // scanner has already distinguished it from continuation
+                    // bytes, so use the equivalent seven-bit terminator.
+                    self.screen.process(b"\x1b\\");
+                    self.send_screen_responses();
+                    if let Some(buf) = self.capture.as_mut() {
+                        if buf.len() <= MAX_CAPTURE {
+                            buf.extend_from_slice(raw);
+                        }
+                    }
+                    changed = true;
+                }
                 mtty_graphics::StreamEvent::Graphics(graphic) => {
                     if self.graphics_enabled {
                         changed |= self.handle_graphic(graphic);
@@ -1731,6 +1744,38 @@ mod tests {
             }
             assert_eq!(term.title(), Some(title), "chunk size {size}");
             assert_eq!(term.screen.line_text(0), "");
+        }
+    }
+
+    #[test]
+    fn cancelled_and_unicode_titles_recover_without_screen_leaks() {
+        for cancellation in [b"\x18".as_slice(), b"\x1a", b""] {
+            for terminator in [b"\x07".as_slice(), b"\x1b\\", b"\x9c"] {
+                let mut stream = b"\x1b]2;interrupted".to_vec();
+                stream.extend_from_slice(cancellation);
+                stream.extend_from_slice("\x1b]2;相机功能 😜".as_bytes());
+                stream.extend_from_slice(terminator);
+                stream.extend_from_slice(b"after");
+                for size in 1..=stream.len() {
+                    let mut term = Terminal::from_pipe(
+                        80,
+                        5,
+                        100,
+                        std::io::empty(),
+                        Box::new(std::io::sink()),
+                        std::sync::Arc::new(|| {}),
+                    );
+                    for chunk in stream.chunks(size) {
+                        term.feed(chunk);
+                    }
+                    assert_eq!(term.title(), Some("相机功能 😜"), "chunk size {size}");
+                    assert_eq!(
+                        term.screen.line_text(0),
+                        "after",
+                        "chunk size {size}, terminator {terminator:?}"
+                    );
+                }
+            }
         }
     }
 

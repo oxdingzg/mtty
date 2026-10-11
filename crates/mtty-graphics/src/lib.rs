@@ -92,6 +92,8 @@ impl Segment {
 /// OSC is a notification followed by either Text or Graphics for that sequence.
 pub enum StreamEvent<'a> {
     Text(&'a [u8]),
+    /// Standalone C1 ST. UTF-8 VT parsers may need its ESC-ST equivalent.
+    C1Terminator(&'a [u8]),
     Graphics(Graphic),
     Osc(&'a [u8]),
     CursorReport,
@@ -128,7 +130,9 @@ impl Scanner {
     pub fn feed(&mut self, bytes: &[u8]) -> Vec<Segment> {
         let mut out = Vec::new();
         self.feed_with(bytes, |event| match event {
-            StreamEvent::Text(text) => out.push(Segment::Text(text.to_vec())),
+            StreamEvent::Text(text) | StreamEvent::C1Terminator(text) => {
+                out.push(Segment::Text(text.to_vec()))
+            }
             StreamEvent::Graphics(graphic) => out.push(Segment::Graphics(graphic)),
             StreamEvent::CursorReport => out.push(Segment::Text(CURSOR_QUERY.to_vec())),
             StreamEvent::Osc(_) => {}
@@ -304,6 +308,10 @@ fn emit_sequence(sequence: &[u8], emit: &mut impl FnMut(StreamEvent<'_>)) {
     }
     match classify(payload) {
         Some(graphic) => emit(StreamEvent::Graphics(graphic)),
+        None if sequence.ends_with(b"\x9c") => {
+            emit(StreamEvent::Text(&sequence[..sequence.len() - 1]));
+            emit(StreamEvent::C1Terminator(&sequence[sequence.len() - 1..]));
+        }
         None => emit(StreamEvent::Text(sequence)),
     }
 }
@@ -615,7 +623,7 @@ mod tests {
         let mut out = Vec::new();
         for chunk in bytes.chunks(chunk_size) {
             scanner.feed_with(chunk, |event| match event {
-                StreamEvent::Text(text) => {
+                StreamEvent::Text(text) | StreamEvent::C1Terminator(text) => {
                     if let Some(OwnedEvent::Text(previous)) = out.last_mut() {
                         previous.extend_from_slice(text);
                     } else {
