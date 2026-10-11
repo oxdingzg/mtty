@@ -64,6 +64,18 @@ schema 1 还会在每次主窗口渲染后计入一次画中画调用，即使�
 mtty --version     # 输出 "mtty <版本号> (native)"
 ```
 
+## macOS 每次重新构建后都再次询问文件夹访问权限
+
+终端会继承 macOS 的文件夹保护:当窗格里的程序(或 shell 本身)读取
+`~/Documents`、`~/Desktop` 或 `~/Downloads` 时,macOS 会向应用请求授权,并**按应用身份**
+记住这次选择。以前 `scripts/package-macos.sh` 产出的是 ad-hoc 签名,每次构建都会生成新身份,
+存下来的授权无法再匹配,于是每次重建都要再问一次。
+
+现在脚本在存在稳定身份时会用它签名(`MTTY_CODESIGN_IDENTITY`,否则取
+`security find-identity -p codesigning` 里第一个 `Apple Development` 身份)。用这样构建的
+bundle 重新安装,授权一次后,后续构建会一直保留。如果提示针对整个主目录,或者你完全不想被询问,
+可在「系统设置 → 隐私与安全性」里给应用授予**完全磁盘访问权限**。
+
 ## 配置没有被读取
 
 配置就是一个文件:

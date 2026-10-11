@@ -48,9 +48,11 @@ python3 scripts/smoke-hosts.py --bundle dist/mtty.app
 bash scripts/install-macos.sh
 ```
 
-Produces one ad-hoc-signed `dist/mtty.app` with `mtty`, `mtty-cli`, the
-icon and URL schemes. Installation archives old known bundles, installs mtty
-and removes the old native launcher without removing user configuration.
+Produces one `dist/mtty.app` with `mtty`, `mtty-cli`, the icon and URL schemes,
+signed with a local code-signing identity when one is available (`Apple
+Development`, or `MTTY_CODESIGN_IDENTITY`) and ad-hoc otherwise. Installation
+archives old known bundles, installs mtty and removes the old native launcher
+without removing user configuration.
 `PROFILE=debug scripts/package-macos.sh` builds a development bundle.
 The installed app uses the macOS system menu bar; a bare binary uses an in-window menu.
 

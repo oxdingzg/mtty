@@ -383,7 +383,7 @@ and manual dispatches. Docs-only pushes skip the compile and lint jobs.
 ### Packaging
 
 ```sh
-scripts/package-macos.sh          # -> dist/mtty.app (ad-hoc signed)
+scripts/package-macos.sh          # -> dist/mtty.app (signed with a local identity, else ad-hoc)
 ```
 
 Release builds are produced by [`.github/workflows/release.yml`](.github/workflows/release.yml)

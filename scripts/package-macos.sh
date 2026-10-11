@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build one native mtty.app, carrying mtty, mtty-cli and mtty-ptyhost (ADR 0041).
 # PROFILE=debug scripts/package-macos.sh also supports a development bundle.
+# Signs with a stable identity when one is available (see MTTY_CODESIGN_IDENTITY).
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
@@ -56,7 +57,22 @@ cat > "$app/Contents/Info.plist" <<PLIST
   </dict></array>
 </dict></plist>
 PLIST
-codesign --force --deep --sign - "$app"
+# Sign with a stable identity when the machine has one. An ad-hoc signature
+# (`--sign -`) gives the bundle a new identity on every build, so macOS cannot
+# remember a folder permission the user granted once (Documents, Desktop,
+# Downloads) and asks again after each rebuild. A real identity keeps the same
+# designated requirement across builds, so the grant sticks. Override the
+# choice with MTTY_CODESIGN_IDENTITY; release builds re-sign in CI anyway.
+identity="${MTTY_CODESIGN_IDENTITY:-}"
+if [ -z "$identity" ]; then
+  identity="$(security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' | head -1)"
+fi
+if [ -n "$identity" ]; then
+  codesign --force --deep --sign "$identity" "$app"
+else
+  codesign --force --deep --sign - "$app"
+fi
 mkdir -p "$root/dist"
 # Replace only our generated bundles, preserving unrelated dist artifacts.
 rm -rf "$root/dist/mtty.app"

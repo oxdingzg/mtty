@@ -77,6 +77,22 @@ You can check which build you have:
 mtty --version     # prints "mtty <version> (native)"
 ```
 
+## macOS asks for folder access again after every rebuild
+
+The terminal inherits macOS's folder protections: when a program in a pane (or
+the shell itself) reads `~/Documents`, `~/Desktop` or `~/Downloads`, macOS asks
+the app for permission and remembers the answer **for that app identity**. A
+development bundle from `scripts/package-macos.sh` used to be ad-hoc signed,
+which produces a new identity on every build, so the stored answer never matched
+again and macOS asked after each rebuild.
+
+The script now signs with a stable identity when one is present
+(`MTTY_CODESIGN_IDENTITY`, else the first `Apple Development` identity reported
+by `security find-identity -p codesigning`). Reinstall a bundle built that way,
+grant the permission once, and later builds keep it. If the prompt is about the
+whole home directory, or you would rather not be asked at all, give the app
+**Full Disk Access** in System Settings → Privacy & Security.
+
 ## My configuration is not being read
 
 Configuration is one file:

@@ -45,7 +45,8 @@ python3 scripts/smoke-hosts.py --bundle dist/mtty.app
 bash scripts/install-macos.sh
 ```
 
-只生成一个 ad-hoc 签名的 `dist/mtty.app`，包内有 `mtty`、`mtty-cli`、图标及 URL schemes。
+只生成一个 `dist/mtty.app`，包内有 `mtty`、`mtty-cli`、图标及 URL schemes;存在本地签名身份
+时用它签名(`Apple Development`,或 `MTTY_CODESIGN_IDENTITY`),否则退回 ad-hoc。
 安装时压缩备份身份匹配的旧应用，安装 mtty 并移除旧 native 入口，保留用户配置。
 `PROFILE=debug scripts/package-macos.sh` 可生成开发包。
 安装的 app 使用 macOS 系统菜单栏；裸跑二进制使用窗口内菜单。
