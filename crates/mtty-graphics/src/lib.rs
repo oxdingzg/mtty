@@ -103,6 +103,8 @@ pub enum StreamEvent<'a> {
 #[derive(Default)]
 pub struct Scanner {
     buf: Vec<u8>,
+    /// Continuations still pending in a string payload, including across feeds.
+    utf8_remaining: u8,
     #[cfg(test)]
     inspected: usize,
 }
@@ -168,7 +170,7 @@ impl Scanner {
                 {
                     Some((0, 1))
                 } else {
-                    find_terminator(bytes, 0, is_osc)
+                    find_terminator(bytes, 0, is_osc, &mut self.utf8_remaining)
                 };
                 #[cfg(test)]
                 {
@@ -219,7 +221,9 @@ impl Scanner {
                 }
                 continue;
             }
-            if let Some((end, len)) = find_terminator(bytes, 2, bytes[1] == b']') {
+            if let Some((end, len)) =
+                find_terminator(bytes, 2, bytes[1] == b']', &mut self.utf8_remaining)
+            {
                 if end + len <= MAX_SEQUENCE {
                     emit_sequence(&bytes[..end + len], &mut emit);
                 } else {
@@ -253,6 +257,7 @@ impl Scanner {
     }
 
     fn reset(&mut self) {
+        self.utf8_remaining = 0;
         if self.buf.capacity() > RETAINED_BUFFER_BYTES {
             self.buf = Vec::new();
         } else {
@@ -291,10 +296,28 @@ fn find_intro(s: &[u8]) -> Option<usize> {
 
 /// Find the end of a sequence body starting at `from`. Returns `(end, term_len)`
 /// where `end` is exclusive of the terminator.
-fn find_terminator(s: &[u8], from: usize, is_osc: bool) -> Option<(usize, usize)> {
+fn find_terminator(
+    s: &[u8],
+    from: usize,
+    is_osc: bool,
+    utf8_remaining: &mut u8,
+) -> Option<(usize, usize)> {
     let mut k = from;
     while k < s.len() {
+        // C1 ST (0x9c) is also a UTF-8 continuation byte, for example in
+        // Chinese titles. Only a standalone byte terminates the string.
+        if *utf8_remaining > 0 {
+            if (0x80..=0xbf).contains(&s[k]) {
+                *utf8_remaining -= 1;
+                k += 1;
+                continue;
+            }
+            *utf8_remaining = 0;
+        }
         match s[k] {
+            0xc2..=0xdf => *utf8_remaining = 1,
+            0xe0..=0xef => *utf8_remaining = 2,
+            0xf0..=0xf4 => *utf8_remaining = 3,
             0x1b if k + 1 < s.len() && s[k + 1] == b'\\' => return Some((k, 2)),
             0x9c => return Some((k, 1)),
             0x07 if is_osc => return Some((k, 1)),
@@ -548,6 +571,35 @@ mod tests {
             });
         }
         out
+    }
+
+    #[test]
+    fn utf8_osc_titles_preserve_c1_continuation_bytes_across_feeds() {
+        for title in [
+            "miao | 检查 H3-2 云台相机拍照与照片拉取功能",
+            "miao | 检查 Huawei testnet 交易持仓及 Tokyo03 L2 数据…",
+            "miao | Ü Ĝ 😜",
+        ] {
+            for terminator in [b"\x07".as_slice(), b"\x1b\\", b"\x9c"] {
+                let mut sequence = format!("\x1b]2;{title}").into_bytes();
+                sequence.extend_from_slice(terminator);
+                let mut expected = vec![
+                    OwnedEvent::Osc(format!("2;{title}").into_bytes()),
+                    OwnedEvent::Text(sequence.clone()),
+                ];
+                // A following title must not inherit the preceding UTF-8 state.
+                sequence.extend_from_slice(b"\x1b]2;next\x07");
+                expected.push(OwnedEvent::Osc(b"2;next".to_vec()));
+                expected.push(OwnedEvent::Text(b"\x1b]2;next\x07".to_vec()));
+                for size in 1..=sequence.len() {
+                    assert_eq!(
+                        events(&sequence, size),
+                        expected,
+                        "{title}: chunk size {size}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

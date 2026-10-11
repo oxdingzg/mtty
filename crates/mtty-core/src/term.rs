@@ -1712,6 +1712,20 @@ mod tests {
     }
 
     #[test]
+    fn chinese_session_title_replaces_generic_title_at_every_chunk_size() {
+        let title = "miao | 检查 H3-2 云台相机拍照与照片拉取功能";
+        let stream = format!("\x1b]2;miao\x07\x1b]2;{title}\x07");
+        for size in 1..=stream.len() {
+            let mut term = make();
+            for chunk in stream.as_bytes().chunks(size) {
+                term.feed(chunk);
+            }
+            assert_eq!(term.title(), Some(title), "chunk size {size}");
+            assert_eq!(term.screen.line_text(0), "");
+        }
+    }
+
+    #[test]
     fn osc7_decodes_directory_uri() {
         assert_eq!(
             parse_osc7("file://localhost/tmp/a%20b/%E7%9B%AE%E5%BD%95"),
