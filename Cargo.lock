@@ -2859,7 +2859,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-acp"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "libc",
  "mtty-platform",
@@ -2869,7 +2869,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-app"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "find-msvc-tools",
  "libc",
@@ -2883,7 +2883,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-cli"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "mtty-mtp",
  "serde_json",
@@ -2891,7 +2891,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-config"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "chacha20poly1305",
  "serde",
@@ -2901,7 +2901,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-core"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "alacritty_terminal",
  "libc",
@@ -2915,7 +2915,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-editor"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "arborium-ada",
  "arborium-asciidoc",
@@ -3007,7 +3007,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-graphics"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "base64",
  "flate2",
@@ -3017,7 +3017,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-keys"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "aes",
  "argon2",
@@ -3032,7 +3032,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-lsp"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "mtty-editor",
  "mtty-platform",
@@ -3041,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-mtp"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "interprocess",
  "serde",
@@ -3050,7 +3050,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-platform"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "arboard",
  "block2 0.6.2",
@@ -3064,7 +3064,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-ptyhost"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "libc",
  "mtty-core",
@@ -3076,7 +3076,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-render"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "glyphon",
  "mtty-core",
@@ -3086,7 +3086,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-ui"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "ashpd",
  "egui",
@@ -3105,7 +3105,7 @@ dependencies = [
 
 [[package]]
 name = "mtty-widget"
-version = "0.2.3"
+version = "0.2.4"
 dependencies = [
  "egui",
  "egui-wgpu",
