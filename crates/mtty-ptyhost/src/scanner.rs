@@ -148,6 +148,7 @@ enum State {
     /// OSC, DCS, SOS, PM, APC: a string until ST (and BEL for OSC).
     String {
         osc: bool,
+        utf8_remaining: u8,
     },
 }
 
@@ -233,8 +234,18 @@ impl Scanner {
                     self.csi.clear();
                     self.state = State::Csi;
                 }
-                b']' => self.state = State::String { osc: true },
-                b'P' | b'X' | b'^' | b'_' => self.state = State::String { osc: false },
+                b']' => {
+                    self.state = State::String {
+                        osc: true,
+                        utf8_remaining: 0,
+                    }
+                }
+                b'P' | b'X' | b'^' | b'_' => {
+                    self.state = State::String {
+                        osc: false,
+                        utf8_remaining: 0,
+                    }
+                }
                 0x20..=0x2f => self.state = State::EscapeIntermediate,
                 0x00..=0x1f => {}
                 _ => {
@@ -260,10 +271,32 @@ impl Scanner {
                 0x20..=0x3f if self.csi.len() < MAX_CSI => self.csi.push(b),
                 _ => {}
             },
-            State::String { osc } => {
-                if osc && b == 0x07 {
-                    self.state = State::Ground;
+            State::String {
+                osc,
+                utf8_remaining,
+            } => {
+                if utf8_remaining > 0 && (0x80..=0xbf).contains(&b) {
+                    self.state = State::String {
+                        osc,
+                        utf8_remaining: utf8_remaining - 1,
+                    };
+                    return;
                 }
+                // A standalone C1 ST ends a string, but the same byte inside
+                // a UTF-8 character must not create a replay boundary.
+                self.state = if b == 0x9c || (osc && b == 0x07) {
+                    State::Ground
+                } else {
+                    State::String {
+                        osc,
+                        utf8_remaining: match b {
+                            0xc2..=0xdf => 1,
+                            0xe0..=0xef => 2,
+                            0xf0..=0xf4 => 3,
+                            _ => 0,
+                        },
+                    }
+                };
             }
         }
     }
@@ -339,6 +372,23 @@ impl Scanner {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn unicode_strings_only_end_at_a_standalone_c1_st() {
+        for intro in [b"\x1b]2;".as_slice(), b"\x1bP", b"\x1b_"] {
+            let mut bytes = intro.to_vec();
+            bytes.extend_from_slice("相机功能 Ĝ 😜".as_bytes());
+            bytes.push(0x9c);
+            let mut scanner = Scanner::new();
+            for (index, byte) in bytes.iter().enumerate() {
+                let boundary = scanner.feed(std::slice::from_ref(byte));
+                assert_eq!(boundary, usize::from(index + 1 == bytes.len()));
+                assert_eq!(scanner.at_boundary(), index + 1 == bytes.len());
+            }
+            scanner.feed(b"\x1b[?2004h");
+            assert_eq!(scanner.modes().get(2004), Some(true));
+        }
+    }
+
     use super::*;
 
     fn boundaries(bytes: &[u8]) -> Vec<usize> {
