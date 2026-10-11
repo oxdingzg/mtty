@@ -235,8 +235,55 @@ fn draw_tab_indicator(
     crate::icons::draw_tab_icon(ui.painter(), rect, icon, color);
 }
 
-/// A horizontal tab bar: clickable, draggable labels, a close affordance, `+`.
+/// A bounded horizontal strip. One-axis ScrollArea accepts both trackpad X
+/// motion and wheel Y motion; chip drags remain reorder gestures.
 pub fn tab_bar(
+    ui: &mut egui::Ui,
+    ch: &ChromeColors,
+    titles: &[String],
+    icons: &[crate::icons::TabIcon],
+    groups: &[Option<String>],
+    active: usize,
+    lang: Lang,
+) -> TabBarEvents {
+    let key = ui.id().with("tab_strip_selection");
+    let selection = (
+        active,
+        titles.get(active).cloned(),
+        titles.len(),
+        ui.available_width(),
+    );
+    let reveal = ui.ctx().data_mut(|data| {
+        let previous = data.get_temp::<(usize, Option<String>, usize, f32)>(key);
+        data.insert_temp(key, selection.clone());
+        previous.as_ref() != Some(&selection)
+    });
+    ui.style_mut().always_scroll_the_only_direction = true;
+    egui::ScrollArea::horizontal()
+        .id_salt("tab_strip_scroll")
+        .max_width(ui.available_width())
+        .min_scrolled_width(0.0)
+        .max_height(22.0)
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .drag_to_scroll(false)
+        .animated(false)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            let events = ui
+                .horizontal(|ui| tab_bar_contents(ui, ch, titles, icons, groups, active, lang))
+                .inner;
+            if reveal {
+                if let Some(rect) = events.tab_rects.get(active) {
+                    ui.scroll_to_rect(*rect, None);
+                }
+            }
+            events
+        })
+        .inner
+}
+
+/// Clickable, draggable chips rendered inside the strip viewport.
+fn tab_bar_contents(
     ui: &mut egui::Ui,
     ch: &ChromeColors,
     titles: &[String],
@@ -961,10 +1008,6 @@ pub const CHROME_DETAILS_W: f32 = 300.0;
 pub const SIDEBAR_RANGE: std::ops::RangeInclusive<f32> = 140.0..=480.0;
 pub const DETAILS_RANGE: std::ops::RangeInclusive<f32> = 200.0..=640.0;
 
-/// Width reserved for the title row's right-hand controls (panel toggles and
-/// font size), mirrored on the left so the title stays centred.
-const TITLE_CONTROLS_W: f32 = 120.0;
-
 /// Empty space that moves the window: a click-sensing backdrop over `rect`.
 /// Widgets added after it sit on top, so it only reports hover where none is.
 fn drag_region(ui: &mut egui::Ui, rect: egui::Rect, id: &str) -> bool {
@@ -1214,44 +1257,14 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
         .show(ctx, |ui| {
             title_drag_hover |=
                 drag_region(ui, ui.max_rect().expand2(egui::vec2(6.0, 3.0)), "title_row");
-            ui.horizontal(|ui| {
-                if show_sidebar {
-                    let row = ui.max_rect();
-                    let mut job = egui::text::LayoutJob::simple_singleline(
-                        titles.get(active).cloned().unwrap_or_default(),
-                        egui::FontId::proportional(13.0),
-                        bg_color(ch.text),
-                    );
-                    // Leave the right-hand controls their room on both sides
-                    // so the title stays centred.
-                    job.wrap = egui::text::TextWrapping::truncate_at_width(
-                        (row.width() - 2.0 * TITLE_CONTROLS_W).max(40.0),
-                    );
-                    let galley = ui.painter().layout_job(job);
-                    ui.painter().galley(
-                        row.center() - galley.size() * 0.5,
-                        galley,
-                        bg_color(ch.text),
-                    );
-                } else {
-                    ui.add_space(inset);
-                    let ev = tab_bar(ui, &ch, &titles, &icons, &tab_groups, active, lang);
-                    switch = ev.switch;
-                    close = ev.close;
-                    rename = ev.rename;
-                    reorder = ev.reorder;
-                    duplicate = ev.duplicate;
-                    close_others = ev.close_others;
-                    close_below = ev.close_below;
-                    move_up = ev.move_up;
-                    move_down = ev.move_down;
-                    set_prefix = ev.set_prefix;
-                    mark_tab = ev.mark;
-                    group_tab = ev.group;
-                    ungroup_tab = ev.ungroup;
-                    new_tab = ev.new_tab;
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let row = ui.available_rect_before_wrap();
+            // Lay out fixed controls first and reserve their actual width.
+            // Tabs and titles never paint or receive clicks in this rectangle.
+            let controls = ui.allocate_new_ui(
+                egui::UiBuilder::new()
+                    .max_rect(row)
+                    .layout(egui::Layout::right_to_left(egui::Align::Center)),
+                |ui| {
                     if host.window_controls() {
                         if ui
                             .button("×")
@@ -1327,8 +1340,61 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
                         .response
                         .on_hover_text(t(lang, "Menu", "菜单"));
                     }
-                });
-            });
+                },
+            );
+            let right =
+                (controls.response.rect.left() - ui.spacing().item_spacing.x).max(row.left());
+            let tabs_rect = egui::Rect::from_min_max(
+                egui::pos2(
+                    (row.left() + if show_sidebar { 0.0 } else { inset }).min(right),
+                    row.top(),
+                ),
+                egui::pos2(right, row.bottom()),
+            );
+            if show_sidebar {
+                let mut job = egui::text::LayoutJob::simple_singleline(
+                    titles.get(active).cloned().unwrap_or_default(),
+                    egui::FontId::proportional(13.0),
+                    bg_color(ch.text),
+                );
+                // Leave the right-hand controls their room on both sides
+                // so the title stays centred.
+                job.wrap = egui::text::TextWrapping::truncate_at_width(
+                    (row.width() - 2.0 * controls.response.rect.width().max(inset)).max(0.0),
+                );
+                let galley = ui.painter().layout_job(job);
+                ui.painter().with_clip_rect(tabs_rect).galley(
+                    row.center() - galley.size() * 0.5,
+                    galley,
+                    bg_color(ch.text),
+                );
+            } else {
+                let ev = ui
+                    .allocate_new_ui(
+                        egui::UiBuilder::new()
+                            .max_rect(tabs_rect)
+                            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                        |ui| {
+                            ui.set_clip_rect(ui.clip_rect().intersect(tabs_rect));
+                            tab_bar(ui, &ch, &titles, &icons, &tab_groups, active, lang)
+                        },
+                    )
+                    .inner;
+                switch = ev.switch;
+                close = ev.close;
+                rename = ev.rename;
+                reorder = ev.reorder;
+                duplicate = ev.duplicate;
+                close_others = ev.close_others;
+                close_below = ev.close_below;
+                move_up = ev.move_up;
+                move_down = ev.move_down;
+                set_prefix = ev.set_prefix;
+                mark_tab = ev.mark;
+                group_tab = ev.group;
+                ungroup_tab = ev.ungroup;
+                new_tab = ev.new_tab;
+            }
         });
     host.on_title_drag_hover(title_drag_hover);
     if minimize_window {
@@ -2353,6 +2419,198 @@ mod tab_menu_tests {
             .copied()
             .unwrap();
         assert!(rects[1].bottom() <= divider && divider <= rects[2].top());
+    }
+
+    #[test]
+    fn tab_strip_scrolls_both_axes_and_reveals_only_selection_changes() {
+        let titles: Vec<_> = (0..12)
+            .map(|i| format!("Tab {i} 相机 / العربية long title"))
+            .collect();
+        let icons = vec![crate::icons::Icon::Terminal.into(); titles.len()];
+        for (delta, modifiers) in [
+            (egui::vec2(-160.0, 0.0), egui::Modifiers::NONE),
+            (egui::vec2(0.0, -160.0), egui::Modifiers::NONE),
+            (egui::vec2(0.0, -160.0), egui::Modifiers::SHIFT),
+        ] {
+            let ctx = test_ctx();
+            let mut time = 0.0;
+            let mut frame = |active, events| {
+                let mut rects = Vec::new();
+                time += 0.1;
+                let _ = ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(320.0, 100.0),
+                        )),
+                        time: Some(time),
+                        events,
+                        modifiers,
+                        ..Default::default()
+                    },
+                    |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            rects = tab_bar(
+                                ui,
+                                &ChromeColors::dark(),
+                                &titles,
+                                &icons,
+                                &[],
+                                active,
+                                Lang::En,
+                            )
+                            .tab_rects;
+                        });
+                    },
+                );
+                rects
+            };
+            frame(0, vec![]);
+            let before = frame(0, vec![]);
+            frame(
+                0,
+                vec![
+                    egui::Event::PointerMoved(egui::pos2(80.0, 19.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta,
+                        modifiers,
+                    },
+                ],
+            );
+            let after = frame(0, vec![]);
+            assert!(after[0].left() < before[0].left() - 20.0, "delta {delta:?}");
+            let manual = frame(0, vec![]);
+            assert!(
+                manual[0].left() <= after[0].left() + 1.0,
+                "manual scroll must not snap back"
+            );
+            frame(11, vec![]);
+            for _ in 0..8 {
+                frame(11, vec![]);
+            }
+            let selected = frame(11, vec![])[11];
+            assert!(
+                selected.left() >= 7.0 && selected.right() <= 313.0,
+                "{selected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn overflowing_tabs_cannot_paint_or_click_over_caption_controls() {
+        struct OverflowHost {
+            controls: bool,
+            font_delta: f32,
+        }
+        impl Chrome for OverflowHost {
+            fn draws_menu_bar(&self) -> bool {
+                false
+            }
+            fn window_controls(&self) -> bool {
+                self.controls
+            }
+            fn show_sidebar(&self) -> bool {
+                false
+            }
+            fn show_details(&self) -> bool {
+                false
+            }
+            fn titlebar_inset(&self) -> f32 {
+                if self.controls {
+                    0.0
+                } else {
+                    84.0
+                }
+            }
+            fn tabs(&self) -> Vec<ChromeTab> {
+                (0..20)
+                    .map(|i| ChromeTab {
+                        title: format!("Overflow tab {i} 中文 / العربية with a long title"),
+                        badge: None,
+                        icon: crate::icons::Icon::Terminal.into(),
+                        location: String::new(),
+                    })
+                    .collect()
+            }
+            fn on_font_delta(&mut self, delta: f32) {
+                self.font_delta += delta;
+            }
+        }
+        for controls in [false, true] {
+            for width in [420.0, 800.0, 1280.0] {
+                for scale in [1.0, 1.5, 2.0] {
+                    let ctx = test_ctx();
+                    ctx.set_pixels_per_point(scale);
+                    let mut host = OverflowHost {
+                        controls,
+                        font_delta: 0.0,
+                    };
+                    let mut frame = |events| {
+                        ctx.run(
+                            egui::RawInput {
+                                screen_rect: Some(egui::Rect::from_min_size(
+                                    egui::Pos2::ZERO,
+                                    egui::vec2(width, 300.0),
+                                )),
+                                events,
+                                ..Default::default()
+                            },
+                            |ctx| render(ctx, &mut host),
+                        )
+                    };
+                    frame(vec![]);
+                    let output = frame(vec![]);
+                    let button = output
+                        .shapes
+                        .iter()
+                        .find_map(|shape| match &shape.shape {
+                            egui::Shape::Text(text) if text.galley.job.text == "A+" => {
+                                Some((text.pos, text.galley.size()))
+                            }
+                            _ => None,
+                        })
+                        .expect("font button drawn");
+                    assert!(
+                        button.0.x + button.1.x <= width,
+                        "controls must fit the viewport"
+                    );
+                    let title_shapes: Vec<_> = output.shapes.iter().filter(|shape| matches!(
+                        &shape.shape, egui::Shape::Text(text) if text.galley.job.text.starts_with("Overflow tab")
+                    )).collect();
+                    assert!(!title_shapes.is_empty());
+                    for shape in title_shapes {
+                        assert!(
+                            shape.clip_rect.right() < button.0.x,
+                            "clip {:?}, button {:?}",
+                            shape.clip_rect,
+                            button
+                        );
+                        assert!(shape.clip_rect.left() >= if controls { 0.0 } else { 84.0 });
+                    }
+                    let pos = button.0 + button.1 * 0.5;
+                    frame(vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed: true,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ]);
+                    frame(vec![egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: egui::Modifiers::NONE,
+                    }]);
+                    assert_eq!(
+                        host.font_delta, 1.0,
+                        "overflow must not intercept control clicks"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
