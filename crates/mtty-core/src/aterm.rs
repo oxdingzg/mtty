@@ -67,7 +67,17 @@ pub struct ATerm {
 }
 
 impl ATerm {
+    /// Alacritty's grid needs two columns for a double-width cell. Reflowing
+    /// such a cell into one column never consumes it and keeps allocating rows
+    /// (alacritty/alacritty#7697), including when a pane is briefly collapsed.
+    pub const MIN_COLS: u16 = 2;
+
+    pub(crate) fn normalize_size(cols: u16, rows: u16) -> (u16, u16) {
+        (cols.max(Self::MIN_COLS), rows.max(1))
+    }
+
     pub fn new(cols: u16, rows: u16, scrollback: usize) -> Self {
+        let (cols, rows) = Self::normalize_size(cols, rows);
         let dims = Dims {
             cols: cols as usize,
             rows: rows as usize,
@@ -453,6 +463,7 @@ impl ATerm {
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
+        let (cols, rows) = Self::normalize_size(cols, rows);
         if cols as usize == self.cols && rows as usize == self.rows {
             return;
         }
@@ -623,6 +634,25 @@ fn sgr(c: Color, bg: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn narrow_grids_keep_room_for_wide_characters() {
+        // Check construction first: on an unpatched engine this fails before
+        // the dangerous reflow, rather than letting a regression exhaust CI.
+        let mut term = ATerm::new(1, 0, 100);
+        assert_eq!(term.size(), (1, 2));
+        term.resize(40, 6);
+        term.process("中文 🦀\r\n".as_bytes());
+        let before = term.snapshot_ansi(100);
+        for _ in 0..100 {
+            term.resize(1, 6);
+            assert_eq!(term.size(), (6, 2));
+            term.resize(40, 6);
+            assert_eq!(term.snapshot_ansi(100), before);
+        }
+        term.resize(0, 0);
+        assert_eq!(term.size(), (1, 2));
+    }
 
     #[test]
     fn an_unfinished_synchronized_frame_is_flushed_at_its_deadline() {

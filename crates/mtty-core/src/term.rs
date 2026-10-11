@@ -164,6 +164,7 @@ impl Terminal {
         extra_env: &[(String, String)],
         waker: std::sync::Arc<dyn Fn() + Send + Sync>,
     ) -> Fallible<Self> {
+        let (cols, rows) = ATerm::normalize_size(cols, rows);
         let (cmd, cwd) = shell_command(shell, cwd, extra_env);
         let (master, child, reader, writer) = spawn_local(cmd, cols, rows)?;
         Ok(Self::pipe(
@@ -193,6 +194,7 @@ impl Terminal {
         extra_env: &[(String, String)],
         waker: std::sync::Arc<dyn Fn() + Send + Sync>,
     ) -> Fallible<Self> {
+        let (cols, rows) = ATerm::normalize_size(cols, rows);
         use mtty_ptyhost::launch;
         let (cmd, cwd) = shell_command(shell, cwd, extra_env);
         let dir = launch::hosts_dir()?;
@@ -239,6 +241,7 @@ impl Terminal {
         scrollback: usize,
         waker: std::sync::Arc<dyn Fn() + Send + Sync>,
     ) -> Fallible<Self> {
+        let (cols, rows) = ATerm::normalize_size(cols, rows);
         if !mtty_ptyhost::launch::valid_id(id) {
             return Err("not a host id".into());
         }
@@ -965,6 +968,7 @@ impl Terminal {
         if rows == 0 || cols == 0 {
             return;
         }
+        let (cols, rows) = ATerm::normalize_size(cols, rows);
         // While replaying, the screen keeps the size the output was made for.
         if let Some(host) = self.host.as_mut().filter(|h| h.replaying) {
             host.pending_resize = Some((rows, cols));
@@ -1541,6 +1545,29 @@ mod tests {
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn narrow_terminal_sizes_and_query_responses_agree() {
+        let replies = SharedBuf::default();
+        let mut term = Terminal::from_pipe(
+            1,
+            1,
+            100,
+            std::io::empty(),
+            Box::new(replies.clone()),
+            std::sync::Arc::new(|| {}),
+        );
+        assert_eq!(term.size(), (1, 2));
+        term.resize(5, 20);
+        term.feed("中文 🦀\r\n".as_bytes());
+        term.resize(5, 1);
+        assert_eq!(term.size(), (5, 2));
+        assert_eq!(term.screen().size(), term.size());
+        term.feed(b"\x1b[18t");
+        assert_eq!(&*replies.0.lock().unwrap(), b"\x1b[8;5;2t");
+        term.resize(5, 20);
+        assert!(term.screen_mut().snapshot_ansi(100).contains("中文 🦀"));
     }
 
     #[test]

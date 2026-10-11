@@ -12,7 +12,7 @@ use std::error::Error;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mtty_core::Terminal;
+use mtty_core::{ATerm, Terminal};
 use mtty_render::{ImageInstance, ImageRenderer, Quad, QuadRenderer, Span, TermRenderer};
 use mtty_ui::layout::{Layout, Rect, SplitDir};
 use mtty_ui::{
@@ -2360,7 +2360,7 @@ impl State {
             for (id, r) in tab.layout.rects(area) {
                 if let Some(pane) = tab.panes.iter_mut().find(|p| p.id == id) {
                     let inner = card_inner(r);
-                    let cols = ((inner.w * scale) / cw).floor().max(1.0) as u16;
+                    let cols = ((inner.w * scale) / cw).floor().max(ATerm::MIN_COLS as f32) as u16;
                     let rows = ((inner.h * scale) / ch).floor().max(1.0) as u16;
                     pane.term.set_cell_size(cw as u16, ch as u16);
                     pane.term.resize(rows, cols);
@@ -2418,7 +2418,7 @@ impl State {
         let scale = self.window.scale_factor() as f32;
         let (cw, ch) = (self.cw * scale, self.ch * scale);
         let area = card_inner(self.grid_area());
-        let cols = ((area.w * scale) / cw).floor().max(1.0) as u16;
+        let cols = ((area.w * scale) / cw).floor().max(ATerm::MIN_COLS as f32) as u16;
         let rows = ((area.h * scale) / ch).floor().max(1.0) as u16;
         (cols, rows)
     }
@@ -3261,7 +3261,7 @@ impl State {
             for (id, r) in &rects {
                 if let Some(pane) = tab.panes.iter_mut().find(|p| &p.id == id) {
                     let inner = card_inner(*r);
-                    let cols = ((inner.w * scale) / cw).floor().max(1.0) as u16;
+                    let cols = ((inner.w * scale) / cw).floor().max(ATerm::MIN_COLS as f32) as u16;
                     let rows = ((inner.h * scale) / ch).floor().max(1.0) as u16;
                     pane.term.set_cell_size(cw as u16, ch as u16);
                     pane.term.resize(rows, cols);
@@ -3779,7 +3779,7 @@ impl State {
                     continue;
                 };
                 let inner = card_inner(*r);
-                let cols = ((inner.w * scale) / cw).floor().max(1.0) as u16;
+                let cols = ((inner.w * scale) / cw).floor().max(ATerm::MIN_COLS as f32) as u16;
                 let rows = ((inner.h * scale) / ch).floor().max(1.0) as u16;
                 pane.term.resize(rows, cols);
                 pane.term.screen_mut().set_scrollback(pane.scroll);
