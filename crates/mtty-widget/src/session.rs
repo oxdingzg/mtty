@@ -27,6 +27,7 @@ fn read(path: &Path) -> Option<Value> {
 pub fn normalize(mut value: Value) -> Option<Value> {
     let tabs = value.get_mut("tabs")?.as_array_mut()?;
     for tab in tabs {
+        recover_miao_host_title(tab);
         let indexed = tab.get("active").is_some_and(Value::is_u64);
         if !indexed {
             continue;
@@ -51,6 +52,44 @@ pub fn normalize(mut value: Value) -> Option<Value> {
     Some(value)
 }
 
+/// Older hosted snapshots saved only the screen. Recover the active pane's
+/// known miao OSC title from the displayed tab label without treating a user
+/// rename or a view-template label as program metadata.
+fn recover_miao_host_title(tab: &mut Value) {
+    if tab.get("title_set").and_then(Value::as_bool) != Some(false) {
+        return;
+    }
+    let Some(title) = tab
+        .get("shown")
+        .and_then(Value::as_str)
+        .filter(|s| {
+            s.strip_prefix("miao | ")
+                .is_some_and(|name| !name.trim().is_empty())
+        })
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    let Some(active) = tab.get("active").and_then(Value::as_str).map(str::to_owned) else {
+        return;
+    };
+    let Some(host) = tab
+        .get_mut("panes")
+        .and_then(Value::as_array_mut)
+        .and_then(|panes| {
+            panes
+                .iter_mut()
+                .find(|pane| pane.get("id").and_then(Value::as_str) == Some(active.as_str()))
+        })
+        .and_then(|pane| pane.get_mut("host"))
+        .and_then(Value::as_object_mut)
+    else {
+        return;
+    };
+    // An explicit null belongs to the new schema and must not be resurrected.
+    host.entry("title").or_insert(json!(title));
+}
+
 fn convert_layout(value: &Value, ids: &[String]) -> Option<Value> {
     if let Some(index) = value.get("Leaf").and_then(Value::as_u64) {
         return Some(json!({"leaf": ids.get(index as usize)?}));
@@ -67,6 +106,43 @@ fn convert_layout(value: &Value, ids: &[String]) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovers_legacy_miao_title_only_for_the_active_hosted_pane() {
+        let value = json!({"tabs": [{"active": "a", "title_set": false,
+        "shown": "miao | saved session", "panes": [
+            {"id": "a", "host": {"id": "a"}},
+            {"id": "b", "host": {"id": "b"}}
+        ]}]});
+        let restored = normalize(value.clone()).unwrap();
+        assert_eq!(
+            restored["tabs"][0]["panes"][0]["host"]["title"],
+            "miao | saved session"
+        );
+        assert!(restored["tabs"][0]["panes"][1]["host"]
+            .get("title")
+            .is_none());
+        for title in [Value::Null, json!("miao | fresh title"), json!("")] {
+            let mut newer = value.clone();
+            newer["tabs"][0]["panes"][0]["host"]["title"] = title.clone();
+            assert_eq!(
+                normalize(newer).unwrap()["tabs"][0]["panes"][0]["host"]["title"],
+                title
+            );
+        }
+        for shown in ["project alias", "miao | ", "shell 1"] {
+            let mut unrelated = value.clone();
+            unrelated["tabs"][0]["shown"] = json!(shown);
+            assert!(normalize(unrelated).unwrap()["tabs"][0]["panes"][0]["host"]
+                .get("title")
+                .is_none());
+        }
+        let mut renamed = value;
+        renamed["tabs"][0]["title_set"] = json!(true);
+        assert!(normalize(renamed).unwrap()["tabs"][0]["panes"][0]["host"]
+            .get("title")
+            .is_none());
+    }
 
     #[test]
     fn migrates_indexed_splits_focus_and_tab_decorations() {

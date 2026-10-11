@@ -67,6 +67,47 @@ fn hosted_shell() -> Terminal {
 }
 
 #[test]
+fn osc_title_survives_snapshot_reattach_and_accepts_fresh_titles() {
+    let mut term = hosted_shell();
+    term.write(b"printf '\\033]2;miao | saved session\\007'; echo title-ready\r");
+    pump_until(&mut term, "title ready", |text| {
+        text.contains("\ntitle-ready")
+    });
+    assert_eq!(term.title(), Some("miao | saved session"));
+    let snapshot = term.host_snapshot(1000).expect("live snapshot");
+    let saved = serde_json::to_value(&snapshot).unwrap();
+    assert_eq!(saved["title"], "miao | saved session");
+    let mut legacy = saved.clone();
+    legacy.as_object_mut().unwrap().remove("title");
+    assert_eq!(
+        serde_json::from_value::<HostSnapshot>(legacy)
+            .unwrap()
+            .title,
+        None
+    );
+    let id = snapshot.id.clone();
+    let socket = snapshot.socket.clone();
+    term.detach_host();
+    drop(term);
+
+    let snapshot = serde_json::from_value(saved).unwrap();
+    let mut term = Terminal::reattach(&id, &socket, Some(snapshot), 60, 12, 1000, waker()).unwrap();
+    // The producer has not emitted any new OSC: offset-based replay cannot
+    // recover the old title, so it must already be present from the snapshot.
+    assert_eq!(term.title(), Some("miao | saved session"));
+    term.write(b"echo reattached\r");
+    pump_until(&mut term, "reattached", |text| {
+        text.contains("\nreattached")
+    });
+    assert_eq!(term.title(), Some("miao | saved session"));
+    term.write(b"printf '\\033]2;miao | new session\\007'; echo title-updated\r");
+    pump_until(&mut term, "fresh title", |text| {
+        text.contains("\ntitle-updated")
+    });
+    assert_eq!(term.title(), Some("miao | new session"));
+}
+
+#[test]
 fn the_program_survives_the_app_and_the_screen_comes_back() {
     let mut term = hosted_shell();
     assert!(term.is_hosted());

@@ -31,6 +31,10 @@ pub struct HostSnapshot {
     pub offset: u64,
     /// The offset is on a sequence boundary (almost always).
     pub boundary: bool,
+    /// OSC 0/2 is terminal metadata, not part of the saved cell grid. The
+    /// replay begins after `offset`, so its earlier title will not be emitted.
+    #[serde(default)]
+    pub title: Option<String>,
     pub state: ScreenState,
 }
 

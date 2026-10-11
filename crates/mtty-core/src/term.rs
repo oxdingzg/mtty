@@ -264,6 +264,7 @@ impl Terminal {
         host.pending_resize = Some((rows, cols));
         let writer = host.writer();
         let mut term = Self::assemble(screen, scrollback, rx, writer, waker, None, None, None);
+        term.title = snapshot.as_ref().and_then(|s| s.title.clone());
         term.host = Some(host);
         Ok(term)
     }
@@ -431,6 +432,7 @@ impl Terminal {
             socket,
             offset,
             boundary,
+            title: self.title.clone(),
             state: self.screen.snapshot_state(max_history),
         })
     }
