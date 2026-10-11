@@ -1505,8 +1505,16 @@ mod tests {
     }
 
     fn make() -> Terminal {
-        let waker: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(|| {});
-        Terminal::new(None, 20, 5, 100, None, &[], waker).expect("spawn shell")
+        // Parser/graphics tests inject bytes directly. A real shell adds PTY
+        // pressure and asynchronous prompt output unrelated to these tests.
+        Terminal::from_pipe(
+            20,
+            5,
+            100,
+            std::io::empty(),
+            Box::new(std::io::sink()),
+            std::sync::Arc::new(|| {}),
+        )
     }
 
     /// A writer that records what the terminal sends over the pipe.
@@ -1715,8 +1723,7 @@ mod tests {
     fn chinese_session_title_replaces_generic_title_at_every_chunk_size() {
         let title = "miao | 检查 H3-2 云台相机拍照与照片拉取功能";
         let stream = format!("\x1b]2;miao\x07\x1b]2;{title}\x07");
-        // Feed only OSCs into one terminal: creating a shell for every chunk
-        // size exhausts macOS PTYs when the workspace tests run concurrently.
+        // OSC-only updates need no screen reset between chunk sizes.
         let mut term = make();
         for size in 1..=stream.len() {
             for chunk in stream.as_bytes().chunks(size) {
