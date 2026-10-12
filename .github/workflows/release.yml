@@ -93,13 +93,13 @@ jobs:
         env:
           APPLE_CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
           APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           set -e
           ARCH=$(uname -m)
-          if [ -n "$APPLE_CERT_P12" ]; then
+          if [ -n "$APPLE_CERT_P12" ] && [ -n "$APPLE_API_KEY_P8" ]; then
             echo "$APPLE_CERT_P12" | base64 --decode > cert.p12
             security create-keychain -p actions tmp.keychain
             security import cert.p12 -k tmp.keychain -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
@@ -107,11 +107,14 @@ jobs:
             IDENTITY=$(security find-identity -v -p codesigning tmp.keychain | awk '{print $2}' | head -1)
             codesign --force --deep --options runtime --sign "$IDENTITY" dist/mtty.app
             (cd dist && zip -qry "../mtty-macos-$ARCH.zip" mtty.app)
+            # The App Store Connect API key authenticates the notary service; an
+            # Apple ID plus app-specific password is rejected with HTTP 401.
+            echo "$APPLE_API_KEY_P8" | base64 --decode > ac_api_key.p8
             xcrun notarytool submit "mtty-macos-$ARCH.zip" \
-              --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
-              --password "$APPLE_APP_PASSWORD" --wait
+              --key ac_api_key.p8 --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER" --wait
             xcrun stapler staple dist/mtty.app
-            rm -f "mtty-macos-$ARCH.zip"
+            rm -f "mtty-macos-$ARCH.zip" ac_api_key.p8 cert.p12
           else
             echo "no signing secrets; shipping ad-hoc signed build"
           fi
