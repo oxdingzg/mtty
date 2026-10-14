@@ -399,7 +399,7 @@ texts follow the table, once per distinct text.
 | rustix 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [github.com/bytecodealliance/rustix](https://github.com/bytecodealliance/rustix) |
 | rustix 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [github.com/bytecodealliance/rustix](https://github.com/bytecodealliance/rustix) |
 | rustix-openpty 0.2.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [github.com/sunfishcode/rustix-openpty](https://github.com/sunfishcode/rustix-openpty) |
-| rustls 0.23.45 | Apache-2.0 OR ISC OR MIT | [github.com/rustls/rustls](https://github.com/rustls/rustls) |
+| rustls 0.23.46 | Apache-2.0 OR ISC OR MIT | [github.com/rustls/rustls](https://github.com/rustls/rustls) |
 | rustls-pki-types 1.15.1 | MIT OR Apache-2.0 | [github.com/rustls/pki-types](https://github.com/rustls/pki-types) |
 | rustls-webpki 0.103.15 | ISC | [github.com/rustls/webpki](https://github.com/rustls/webpki) |
 | rustversion 1.0.23 | MIT OR Apache-2.0 | [github.com/dtolnay/rustversion](https://github.com/dtolnay/rustversion) |
@@ -9592,7 +9592,7 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ```
 
-This exact text is filed by rustls 0.23.45.
+This exact text is filed by rustls 0.23.46.
 
 ```text
 ISC License (ISC)
@@ -13934,7 +13934,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-This exact text is filed by rustls 0.23.45.
+This exact text is filed by rustls 0.23.46.
 
 ```text
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>
