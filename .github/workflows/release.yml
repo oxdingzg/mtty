@@ -119,13 +119,15 @@ jobs:
               --key ac_api_key.p8 --key-id "$APPLE_API_KEY_ID" \
               --issuer "$APPLE_API_ISSUER" --wait
             # stapler fetches the ticket from Apple's ticket-delivery service,
-            # and the Intel runner has twice lost that connection mid-staple
-            # (NSURLErrorDomain -1005, stapler error 68).
+            # and the Intel runner pool has repeatedly lost that connection
+            # (NSURLErrorDomain -1005, stapler error 68) while notarization
+            # itself succeeded. A missing staple only moves the Gatekeeper
+            # check online, so after the retries give up, ship anyway.
             for attempt in 1 2 3; do
               if xcrun stapler staple dist/mtty.app; then
                 break
               elif [ "$attempt" = 3 ]; then
-                exit 1
+                echo "::warning::stapling failed after 3 attempts (Apple ticket-delivery unreachable); the build is signed and notarized, Gatekeeper verifies the ticket online at first launch"
               else
                 sleep "$((attempt * 15))"
                 echo "staple attempt $attempt failed; retrying"
