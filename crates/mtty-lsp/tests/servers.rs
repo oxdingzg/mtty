@@ -103,7 +103,9 @@ fn exercise(lsp: &mut Lsp, case: Case<'_>) {
     // Definition of the call: the function's line (0).
     assert!(lsp.definition(file, &rope, call));
     let (targets, encoding) = wait(lsp, 30, "definition", |_, e| match e {
-        Event::Definition { targets, encoding } => Some((targets, encoding)),
+        Event::Definition {
+            targets, encoding, ..
+        } => Some((targets, encoding)),
         _ => None,
     });
     assert_eq!(
