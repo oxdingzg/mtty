@@ -192,6 +192,12 @@ jobs:
             echo "baseline unchanged"
             exit 0
           fi
+          # A newer measurement supersedes any open baseline PR; without this
+          # every schedule run leaves another branch behind.
+          for old in $(gh pr list --base main --json headRefName,number \
+              -q '.[] | select(.headRefName | startswith("chore/perf-baseline-")) | .number'); do
+            gh pr close "$old" --comment "Superseded by a newer schedule run." --delete-branch
+          done
           # main is protected: a direct push is rejected ("Changes must be made
           # through a pull request"), so land the refresh through a PR instead.
           branch="chore/perf-baseline-${GITHUB_RUN_ID}"
@@ -207,6 +213,8 @@ jobs:
           # GITHUB_TOKEN-created PRs do not trigger pull_request workflows.
           # Explicit dispatch does, and the required gate prevents an unchecked merge.
           gh workflow run ci.yml --ref "$branch"
+          pr_number="$(gh pr view "$branch" --json number -q .number)"
+          gh pr merge "$pr_number" --squash --auto --delete-branch
 
   packaging:
     needs: changes
