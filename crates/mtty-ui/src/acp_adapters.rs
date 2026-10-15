@@ -129,7 +129,7 @@ pub fn parse_command(text: &str) -> Result<Vec<String>, String> {
         }
         text.split_whitespace().map(str::to_owned).collect()
     };
-    if command.first().is_none_or(|command| command.is_empty())
+    if command.first().map_or(true, |command| command.is_empty())
         || command.iter().any(|argument| argument.contains('\0'))
     {
         return Err("enter a command or JSON argv array".into());
