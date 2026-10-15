@@ -50,8 +50,10 @@ mod project_workspace;
 mod quick_content;
 mod redraw;
 mod remote_conflict;
+mod remote_context;
 pub mod resource_metrics;
 mod session;
+mod task_review;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod wayland_dnd;
 
@@ -466,6 +468,7 @@ struct Pane {
     on_enter: Option<String>,
     /// The last command output already published to the control plane.
     published_output: Option<mtty_core::CommandOutput>,
+    recovery: remote_context::Recovery,
     /// Inline images read for a restored pane, placed once the pane has its
     /// final width. Their anchors are grid lines, so placing them before the
     /// layout settles would leave them over reflowed text.
@@ -703,7 +706,7 @@ impl Tab {
             .panes
             .iter()
             .map(|p| {
-                serde_json::json!({ "id": p.id, "cwd": p.term.cwd(), "host": pane_host(&p.term) })
+                serde_json::json!({ "id": p.id, "cwd": p.term.cwd(), "host": pane_host(&p.term), "remote_cwd": p.term.remote_cwd().is_some(), "cwd_origin": p.term.remote_cwd_origin() })
             })
             .collect();
         let editors: Vec<_> = self
@@ -1186,6 +1189,12 @@ enum JobDone {
         name: String,
         result: Result<String, String>,
     },
+    TaskReviewLoaded {
+        task: mtty_ui::tasks::Task,
+        result: Result<mtty_ui::task_review::Review, String>,
+    },
+    TaskReviewRequested(Result<mtty_ui::tasks::Task, String>),
+    TaskCheckRequested(Result<(mtty_ui::tasks::Task, u64), String>),
     /// A merge (`merged`) or discard finished; the window then reloads.
     TaskDone {
         name: String,
@@ -1200,6 +1209,13 @@ enum JobDone {
         /// The bytes as written; edits made meanwhile stay "modified".
         text: Vec<u8>,
         result: std::io::Result<()>,
+    },
+    RemoteLinkRead {
+        dest: String,
+        path: String,
+        line: usize,
+        column: Option<usize>,
+        result: std::io::Result<Vec<u8>>,
     },
     CommandExport {
         path: String,
@@ -1961,6 +1977,8 @@ struct State {
     task_dialog: Option<(String, Option<usize>)>,
     /// The Agent Tasks window.
     tasks_view: Option<TasksView>,
+    task_review: Option<task_review::View>,
+    task_checks: Vec<task_review::PendingCheck>,
     attention_inbox: mtty_ui::attention::Inbox,
     attention_open: bool,
     command_history: Option<command_history::View>,
@@ -2358,6 +2376,8 @@ fn mac_shortcut(key: &Key, mods: ModifiersState) -> Option<Shortcut> {
 /// A hyperlink resolved under the pointer, with its screen geometry.
 struct LinkHit {
     url: String,
+    pane: String,
+    file: Option<mtty_ui::file_link::FileLink>,
     start: u16,
     end: u16,
     row: u16,
@@ -2494,6 +2514,7 @@ impl State {
             scroll: 0,
             on_enter: None,
             published_output: None,
+            recovery: Default::default(),
             pending_images: None,
             pending_note: None,
         }
@@ -3283,17 +3304,7 @@ impl State {
         let remote_command = remote_command.map(|cmd| {
             mtty_ui::ssh::command_in_directory(
                 &cmd,
-                self.active_pane().and_then(|pane| {
-                    let target = self
-                        .tabs
-                        .get(self.active_tab)
-                        .and_then(|tab| tab.ssh_target.as_deref())
-                        .map(ssh_host);
-                    pane.term
-                        .cwd_host()
-                        .filter(|host| *host == "mtty-remote" || Some(*host) == target.as_deref())
-                        .and_then(|_| pane.term.cwd())
-                }),
+                self.active_pane().and_then(|pane| pane.term.remote_cwd()),
             )
         });
         let Some(mut pane) = self.spawn_pane(self.active_cwd_for_new()) else {
@@ -3405,9 +3416,22 @@ impl State {
             .max(0.0) as u16;
         let tab = self.tabs.get(self.active_tab)?;
         let pane = tab.panes.iter().find(|p| p.id == id)?;
-        let (url, start, end) = link_at(&pane.term.screen().line_text(row), col)?;
+        let text = pane.term.screen().line_text(row);
+        let (url, start, end, file) = if let Some((url, start, end)) = link_at(&text, col) {
+            (url, start, end, None)
+        } else {
+            let file = mtty_ui::file_link::at(&text, col)?;
+            (
+                format!("{}:{}", file.path, file.line),
+                file.start,
+                file.end,
+                Some(file),
+            )
+        };
         Some(LinkHit {
             url,
+            pane: id,
+            file,
             start,
             end,
             row,
@@ -4581,6 +4605,7 @@ impl State {
         self.acp_window(ctx);
         self.task_dialog_window(ctx);
         self.tasks_window(ctx);
+        self.task_review_window(ctx);
         self.attention_window(ctx);
         self.command_history_window(ctx);
         self.hosts_window(ctx);
@@ -4966,12 +4991,24 @@ impl State {
                         .get("cwd")
                         .and_then(|x| x.as_str())
                         .map(std::path::PathBuf::from);
-                    if let Some(pane) = self.reattach_pane(p) {
+                    if let Some(mut pane) = self.reattach_pane(p) {
+                        pane.recovery = remote_context::Recovery::Reattached;
+                        if p.get("remote_cwd").and_then(|value| value.as_bool()) == Some(true) {
+                            if let Some(cwd) = p.get("cwd").and_then(|value| value.as_str()) {
+                                pane.term.restore_remote_cwd(
+                                    cwd.to_owned(),
+                                    p.get("cwd_origin")
+                                        .and_then(|value| value.as_str())
+                                        .map(str::to_owned),
+                                );
+                            }
+                        }
                         map.insert(pane.id.clone(), pane.id.clone());
                         panes.push(pane);
                         continue;
                     }
-                    if let Some(mut pane) = self.spawn_pane(cwd) {
+                    if let Some(mut pane) = self.spawn_pane(if ssh { None } else { cwd }) {
+                        pane.recovery = remote_context::Recovery::History;
                         self.restore_pane_contents(&mut pane, p);
                         if let Some(old) = p.get("id").and_then(|x| x.as_str()) {
                             map.insert(old.to_string(), pane.id.clone());
@@ -5313,16 +5350,33 @@ impl State {
                 rows.push(("Title".into(), self.title_of(tab)));
                 rows.push((
                     "Directory".into(),
-                    pane.term.cwd().unwrap_or("—").to_string(),
+                    if tab.ssh {
+                        pane.term.remote_cwd()
+                    } else {
+                        pane.term.cwd()
+                    }
+                    .unwrap_or("—")
+                    .to_string(),
                 ));
                 let (r, c) = pane.term.screen().size();
                 rows.push(("Size".into(), format!("{c} × {r}")));
                 rows.push(("Pane".into(), pane.id.clone()));
+                rows.extend(self.pane_context_rows(tab, pane));
             }
             if let Some(ed) = tab.editors.iter().find(|e| e.id == tab.active) {
                 let (line, col) = ed.caret_line_col();
                 rows.push(("Title".into(), self.title_of(tab)));
                 rows.push(("File".into(), ed.path.display().to_string()));
+                if let Some(remote) = &ed.remote {
+                    rows.push((
+                        mtty_ui::i18n::t(self.lang, "Host", "主机").into(),
+                        remote.dest.clone(),
+                    ));
+                    rows.push((
+                        mtty_ui::i18n::t(self.lang, "Remote path", "远程路径").into(),
+                        remote.path.clone(),
+                    ));
+                }
                 let lines = ed.total_lines().to_string();
                 match &ed.large {
                     Some(large) if !large.file.indexed() => {
@@ -5436,6 +5490,8 @@ enum Cmd {
     /// Agent tasks in git worktrees (B2.4).
     NewTask,
     Tasks,
+    ReviewCurrentTask,
+    CheckCurrentTask,
     AttentionInbox,
     NextAttention,
     CommandHistory,
@@ -5572,6 +5628,18 @@ impl State {
             ),
             (Cmd::NewTask, t(l, "New Agent Task…", "新建 Agent 任务…")),
             (Cmd::Tasks, t(l, "Agent Tasks…", "Agent 任务…")),
+            (
+                Cmd::ReviewCurrentTask,
+                t(l, "Review Current Task…", "审阅当前任务…"),
+            ),
+            (
+                Cmd::CheckCurrentTask,
+                t(
+                    l,
+                    "Check Current Task (git diff --check)",
+                    "检查当前任务（git diff --check）",
+                ),
+            ),
             (Cmd::AttentionInbox, t(l, "Attention Inbox…", "待处理事项…")),
             (
                 Cmd::CommandHistory,
@@ -6065,6 +6133,26 @@ impl State {
                     self.show_notice(
                         t_lang(self.lang, "No pending tasks", "没有待处理任务").into(),
                     );
+                }
+            }
+            Cmd::ReviewCurrentTask => {
+                if let Some(cwd) = self.cwd() {
+                    self.spawn_job(move || {
+                        JobDone::TaskReviewRequested(mtty_ui::task_review::task_at(&cwd))
+                    });
+                }
+            }
+            Cmd::CheckCurrentTask => {
+                if !self.read_only {
+                    if let Some(cwd) = self.cwd() {
+                        self.spawn_job(move || {
+                            JobDone::TaskCheckRequested((|| {
+                                let task = mtty_ui::task_review::task_at(&cwd)?;
+                                let revision = mtty_ui::task_review::snapshot(&task)?.fingerprint;
+                                Ok((task, revision))
+                            })())
+                        });
+                    }
                 }
             }
             Cmd::Tasks => match self.cwd() {
@@ -9933,6 +10021,7 @@ impl State {
             return;
         };
         let command = typed_ssh(&cmd);
+        pane.recovery = remote_context::Recovery::Reconnect;
         match restored_ssh_action(self.ssh_auto_reconnect) {
             RestoredSsh::Auto => {
                 pane.scroll = 0;
@@ -11373,6 +11462,7 @@ impl State {
             scroll: 0,
             on_enter: None,
             published_output: None,
+            recovery: Default::default(),
             pending_images: None,
             pending_note: None,
         })
@@ -12255,6 +12345,9 @@ impl State {
                             if ui.button(t(lang, "Diff", "查看改动")).clicked() {
                                 action = Some((i, "diff"));
                             }
+                            if ui.button(t(lang, "Review…", "审阅…")).clicked() {
+                                action = Some((i, "review"));
+                            }
                             match view.confirm {
                                 Some((c, merge)) if c == i => {
                                     let label = if merge {
@@ -12314,6 +12407,7 @@ impl State {
                 }
                 self.publish_panes();
             }
+            "review" => self.open_task_review(task),
             "diff" => self.spawn_job(move || {
                 let result = mtty_ui::tasks::diff(&task);
                 JobDone::TaskDiff {
@@ -14862,6 +14956,36 @@ impl State {
                     self.show_notice(msg);
                 }
             },
+            JobDone::TaskReviewRequested(result) => match result {
+                Ok(task) => self.open_task_review(task),
+                Err(error) => self.show_notice(format!(
+                    "{}: {error}",
+                    t(self.lang, "No task here", "此处没有任务")
+                )),
+            },
+            JobDone::TaskCheckRequested(result) => match result {
+                Ok((task, revision)) => {
+                    self.open_task_review(task.clone());
+                    self.start_task_check(task, "git diff --check".into(), revision);
+                }
+                Err(error) => self.show_notice(error),
+            },
+            JobDone::TaskReviewLoaded { task, result } => {
+                if let Some(view) = self
+                    .task_review
+                    .as_mut()
+                    .filter(|view| view.task.path == task.path)
+                {
+                    view.loading = false;
+                    match result {
+                        Ok(data) => view.data = Some(data),
+                        Err(error) => self.show_notice(format!(
+                            "{}: {error}",
+                            t(self.lang, "Review failed", "审阅失败")
+                        )),
+                    }
+                }
+            }
             JobDone::TaskDone {
                 name,
                 merged,
@@ -14913,6 +15037,23 @@ impl State {
                     "{}: {error}",
                     t(self.lang, "Export failed", "导出失败")
                 )),
+            },
+            JobDone::RemoteLinkRead {
+                dest,
+                path,
+                line,
+                column,
+                result,
+            } => match result {
+                Ok(bytes) => {
+                    if self.open_remote_editor_pane(dest, path, &bytes) {
+                        self.go_active_editor_to(
+                            Some(line),
+                            column.map(|column| column.saturating_sub(1)),
+                        );
+                    }
+                }
+                Err(error) => self.show_notice(format!("{dest}:{path}: {error}")),
             },
             JobDone::RemoteWrite {
                 id,
@@ -15908,6 +16049,8 @@ impl ApplicationHandler<HostEvent> for Host {
             pending_transport_connects: 0,
             task_dialog: None,
             tasks_view: None,
+            task_review: None,
+            task_checks: Vec::new(),
             attention_inbox: mtty_ui::attention::Inbox::default(),
             attention_open: false,
             command_history: None,
@@ -16245,6 +16388,7 @@ impl ApplicationHandler<HostEvent> for Host {
                 }
             }
             state.poll_project_runs();
+            state.poll_task_checks();
             state.reap_exited();
             state.save_scrollback_periodically();
             let drawable = window_drawable(&state.window, state.occluded);
@@ -16783,7 +16927,11 @@ impl ApplicationHandler<HostEvent> for Host {
                         let linked = if state.mods.super_key() || state.mods.control_key() {
                             match state.link_at_pointer() {
                                 Some(hit) => {
-                                    open_external(&hit.url);
+                                    if let Some(file) = &hit.file {
+                                        state.open_file_reference(&hit.pane, file);
+                                    } else {
+                                        open_external(&hit.url);
+                                    }
                                     true
                                 }
                                 None => false,
@@ -19363,6 +19511,7 @@ mod tests {
             scroll: 0,
             on_enter: None,
             published_output: None,
+            recovery: Default::default(),
             pending_images: None,
             pending_note: None,
         };

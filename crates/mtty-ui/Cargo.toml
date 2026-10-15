@@ -18,6 +18,7 @@ egui = "0.30"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 minisign-verify = "0.3.0"
+unicode-width = "0.2"
 # Serial consoles (BSD-2-Clause OR Apache-2.0). ADR 0037. Ports are opened by
 # path, and the list falls back to a /dev scan where the crate cannot enumerate.
 # serial2, not serialport: the latter is MPL-2.0, which ADR 0006 excludes.

@@ -445,23 +445,48 @@ pub fn base64_encode(bytes: &[u8]) -> String {
 /// Cap on how much of a remote file we read into the reader.
 pub const MAX_REMOTE_BYTES: u64 = 2 * 1024 * 1024;
 
-/// The `ssh` argv for reading a remote file (`cat`), reusing the ControlMaster.
-pub fn read_args(dest: &str, path: &str) -> Vec<String> {
+fn path_arg(path: &str) -> String {
+    if path == "~" {
+        "\"$HOME\"".into()
+    } else if let Some(path) = path.strip_prefix("~/") {
+        format!("\"$HOME\"/{}", shell_quote(path))
+    } else {
+        shell_quote(path)
+    }
+}
+
+fn transfer_args(destination: &str) -> Vec<String> {
     let mut args = base_args();
-    args.push(dest.to_string());
+    if let Some(target) = Target::parse(destination) {
+        if let Some(port) = target.port {
+            args.extend(["-p".into(), port.to_string()]);
+        }
+        let destination = match target.user {
+            Some(user) => format!("{user}@{}", target.host),
+            None => target.host,
+        };
+        args.extend(["--".into(), destination]);
+    } else {
+        args.extend(["--".into(), destination.to_owned()]);
+    }
+    args
+}
+
+/// The `ssh` argv for a bounded remote read, reusing the ControlMaster.
+pub fn read_args(dest: &str, path: &str) -> Vec<String> {
+    let mut args = transfer_args(dest);
     args.push(format!(
         "head -c {} -- {}",
         MAX_REMOTE_BYTES + 1,
-        shell_quote(path)
+        path_arg(path)
     ));
     args
 }
 
 /// The `ssh` argv for writing a remote file (`cat >`), reusing the ControlMaster.
 pub fn write_args(dest: &str, path: &str) -> Vec<String> {
-    let mut args = base_args();
-    args.push(dest.to_string());
-    args.push(format!("cat > {}", shell_quote(path)));
+    let mut args = transfer_args(dest);
+    args.push(format!("cat > {}", path_arg(path)));
     args
 }
 
@@ -492,9 +517,8 @@ pub fn read_remote(dest: &str, path: &str) -> std::io::Result<Vec<u8>> {
 /// The `ssh` argv for probing a remote file's length and mtime, reusing the
 /// ControlMaster. GNU `stat -c` first, BSD/macOS `stat -f` as the fallback.
 pub fn stat_args(dest: &str, path: &str) -> Vec<String> {
-    let q = shell_quote(path);
-    let mut args = base_args();
-    args.push(dest.to_string());
+    let q = path_arg(path);
+    let mut args = transfer_args(dest);
     args.push(format!(
         "stat -c '%s %Y' -- {q} 2>/dev/null || stat -f '%z %m' -- {q}"
     ));
@@ -568,7 +592,7 @@ fn checked_write_script(path: &str, expected: &[u8], data: &[u8]) -> String {
          base64 $decode >\"$tmp\" <<'MTTY_DATA'\n{}\nMTTY_DATA\n\
          if ! cmp -s \"$p\" \"$old\"; then echo 'remote file changed during save' >&2; exit 73; fi\n\
          mv -f \"$tmp\" \"$p\"\n",
-        shell_quote(path), base64_encode(expected), base64_encode(data),
+        path_arg(path), base64_encode(expected), base64_encode(data),
     )
 }
 
@@ -579,8 +603,8 @@ pub fn write_remote_checked(
     data: &[u8],
 ) -> std::io::Result<()> {
     use std::io::Write;
-    let mut args = base_args();
-    args.extend([dest.to_owned(), "sh -s".to_owned()]);
+    let mut args = transfer_args(dest);
+    args.push("sh -s".to_owned());
     let mut child = mtty_platform::background_command("ssh")
         .args(args)
         .stdin(std::process::Stdio::piped())
@@ -865,6 +889,19 @@ mod tests {
         assert_eq!(base64_encode(b"fo"), "Zm8=");
         assert_eq!(base64_encode(b"foo"), "Zm9v");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn transfers_preserve_explicit_ports_and_expand_only_the_home_prefix() {
+        let args = read_args("user@example.invalid:2222", "~/a ' quoted.txt");
+        let port = args.iter().position(|arg| arg == "-p").unwrap();
+        assert_eq!(args[port + 1], "2222");
+        assert!(args.iter().any(|arg| arg == "user@example.invalid"));
+        assert!(args.last().unwrap().contains("\"$HOME\"/"));
+        assert!(!read_args("example.invalid", "/tmp/$HOME.txt")
+            .last()
+            .unwrap()
+            .contains("\"$HOME\""));
     }
 
     #[test]

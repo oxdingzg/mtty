@@ -8,6 +8,7 @@
 pub mod agentloop;
 pub mod attention;
 pub mod chrome;
+pub mod file_link;
 pub mod forward;
 pub mod ftp;
 pub mod hints;
@@ -30,6 +31,7 @@ pub mod selection;
 pub mod sftp;
 pub mod ssh;
 pub mod syntax;
+pub mod task_review;
 pub mod tasks;
 pub mod theme;
 pub mod transport;
