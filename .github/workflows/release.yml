@@ -403,7 +403,7 @@ jobs:
           # no file falls back to GitHub's generated notes.
           if body=$(python3 scripts/release-notes.py "${GITHUB_REF_NAME}"); then
             printf '%s' "$body" > release-body.md
-            gh release create "${GITHUB_REF_NAME}" artifacts/* --notes-file release-body.md
+            gh release create "${GITHUB_REF_NAME}" artifacts/* --title "${GITHUB_REF_NAME}" --notes-file release-body.md
           else
-            gh release create "${GITHUB_REF_NAME}" artifacts/* --generate-notes
+            gh release create "${GITHUB_REF_NAME}" artifacts/* --title "${GITHUB_REF_NAME}" --generate-notes
           fi
