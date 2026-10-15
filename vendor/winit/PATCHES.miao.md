@@ -15,5 +15,16 @@ Only the macOS content view is touched (`src/platform_impl/macos/view.rs`):
 Symptom without the patch: on macOS, pressing and dragging a tab chip moved the
 whole window instead of reordering the tab.
 
+2. `insertText:replacementRange:` reads the current event's characters only
+   when the event is actually a key down. The CJK check compares the committed
+   string against `NSApp.currentEvent.characters`; on macOS 26 the new
+   NSInputAnalytics path can deliver `insertText:` while the current event is
+   not a keyboard event, and `-[NSEvent characters]` then trips an
+   NSAssertionHandler (SIGABRT, main thread). Two crashes were collected this
+   way (2026-10-14, 2026-10-15), both on Chinese input.
+
+Symptom without the patch: the app aborts mid-typing when the IME or macOS
+input analytics commits text outside a key event.
+
 Upstream is MIT / Apache-2.0 (see `LICENSE-MIT`, `LICENSE-APACHE`); only `src/`,
 `Cargo.toml` and those licence files are vendored.

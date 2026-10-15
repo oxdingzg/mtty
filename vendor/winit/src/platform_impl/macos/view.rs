@@ -7,7 +7,7 @@ use objc2::rc::{Retained, WeakId};
 use objc2::runtime::{AnyObject, Sel};
 use objc2::{declare_class, msg_send_id, mutability, sel, ClassType, DeclaredClass};
 use objc2_app_kit::{
-    NSApplication, NSCursor, NSEvent, NSEventPhase, NSResponder, NSTextInputClient,
+    NSApplication, NSCursor, NSEvent, NSEventPhase, NSEventType, NSResponder, NSTextInputClient,
     NSTrackingRectTag, NSView, NSViewFrameDidChangeNotification,
 };
 use objc2_foundation::{
@@ -424,7 +424,18 @@ declare_class!(
                 unsafe {
                     NSApplication::sharedApplication(mtm)
                         .currentEvent()
-                        .and_then(|e| e.characters())
+                        .and_then(|e| {
+                            // macOS 26 asserts inside `-[NSEvent characters]`
+                            // for non-keyboard events, and NSInputAnalytics can
+                            // deliver insertText: while the current event is
+                            // something else entirely (observed as SIGABRT).
+                            // Only a real key event carries characters.
+                            if e.r#type() == NSEventType::KeyDown {
+                                e.characters()
+                            } else {
+                                None
+                            }
+                        })
                         .map(|chars| chars.to_string() != string)
                         .unwrap_or(false)
                 }
