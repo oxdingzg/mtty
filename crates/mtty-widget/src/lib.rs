@@ -52,6 +52,7 @@ mod remote_conflict;
 mod remote_context;
 pub mod resource_metrics;
 mod session;
+mod task_review;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod wayland_dnd;
 
@@ -1183,6 +1184,12 @@ enum JobDone {
         name: String,
         result: Result<String, String>,
     },
+    TaskReviewLoaded {
+        task: mtty_ui::tasks::Task,
+        result: Result<mtty_ui::task_review::Review, String>,
+    },
+    TaskReviewRequested(Result<mtty_ui::tasks::Task, String>),
+    TaskCheckRequested(Result<(mtty_ui::tasks::Task, u64), String>),
     /// A merge (`merged`) or discard finished; the window then reloads.
     TaskDone {
         name: String,
@@ -1962,6 +1969,8 @@ struct State {
     task_dialog: Option<(String, Option<usize>)>,
     /// The Agent Tasks window.
     tasks_view: Option<TasksView>,
+    task_review: Option<task_review::View>,
+    task_checks: Vec<task_review::PendingCheck>,
     attention_inbox: mtty_ui::attention::Inbox,
     attention_open: bool,
     command_history: Option<command_history::View>,
@@ -4587,6 +4596,7 @@ impl State {
         self.acp_window(ctx);
         self.task_dialog_window(ctx);
         self.tasks_window(ctx);
+        self.task_review_window(ctx);
         self.attention_window(ctx);
         self.command_history_window(ctx);
         self.hosts_window(ctx);
@@ -5471,6 +5481,8 @@ enum Cmd {
     /// Agent tasks in git worktrees (B2.4).
     NewTask,
     Tasks,
+    ReviewCurrentTask,
+    CheckCurrentTask,
     AttentionInbox,
     NextAttention,
     CommandHistory,
@@ -5605,6 +5617,18 @@ impl State {
             ),
             (Cmd::NewTask, t(l, "New Agent Task…", "新建 Agent 任务…")),
             (Cmd::Tasks, t(l, "Agent Tasks…", "Agent 任务…")),
+            (
+                Cmd::ReviewCurrentTask,
+                t(l, "Review Current Task…", "审阅当前任务…"),
+            ),
+            (
+                Cmd::CheckCurrentTask,
+                t(
+                    l,
+                    "Check Current Task (git diff --check)",
+                    "检查当前任务（git diff --check）",
+                ),
+            ),
             (Cmd::AttentionInbox, t(l, "Attention Inbox…", "待处理事项…")),
             (
                 Cmd::CommandHistory,
@@ -6090,6 +6114,26 @@ impl State {
                     self.show_notice(
                         t_lang(self.lang, "No pending tasks", "没有待处理任务").into(),
                     );
+                }
+            }
+            Cmd::ReviewCurrentTask => {
+                if let Some(cwd) = self.cwd() {
+                    self.spawn_job(move || {
+                        JobDone::TaskReviewRequested(mtty_ui::task_review::task_at(&cwd))
+                    });
+                }
+            }
+            Cmd::CheckCurrentTask => {
+                if !self.read_only {
+                    if let Some(cwd) = self.cwd() {
+                        self.spawn_job(move || {
+                            JobDone::TaskCheckRequested((|| {
+                                let task = mtty_ui::task_review::task_at(&cwd)?;
+                                let revision = mtty_ui::task_review::snapshot(&task)?.fingerprint;
+                                Ok((task, revision))
+                            })())
+                        });
+                    }
                 }
             }
             Cmd::Tasks => match self.cwd() {
@@ -12280,6 +12324,9 @@ impl State {
                             if ui.button(t(lang, "Diff", "查看改动")).clicked() {
                                 action = Some((i, "diff"));
                             }
+                            if ui.button(t(lang, "Review…", "审阅…")).clicked() {
+                                action = Some((i, "review"));
+                            }
                             match view.confirm {
                                 Some((c, merge)) if c == i => {
                                     let label = if merge {
@@ -12339,6 +12386,7 @@ impl State {
                 }
                 self.publish_panes();
             }
+            "review" => self.open_task_review(task),
             "diff" => self.spawn_job(move || {
                 let result = mtty_ui::tasks::diff(&task);
                 JobDone::TaskDiff {
@@ -14878,6 +14926,36 @@ impl State {
                     self.show_notice(msg);
                 }
             },
+            JobDone::TaskReviewRequested(result) => match result {
+                Ok(task) => self.open_task_review(task),
+                Err(error) => self.show_notice(format!(
+                    "{}: {error}",
+                    t(self.lang, "No task here", "此处没有任务")
+                )),
+            },
+            JobDone::TaskCheckRequested(result) => match result {
+                Ok((task, revision)) => {
+                    self.open_task_review(task.clone());
+                    self.start_task_check(task, "git diff --check".into(), revision);
+                }
+                Err(error) => self.show_notice(error),
+            },
+            JobDone::TaskReviewLoaded { task, result } => {
+                if let Some(view) = self
+                    .task_review
+                    .as_mut()
+                    .filter(|view| view.task.path == task.path)
+                {
+                    view.loading = false;
+                    match result {
+                        Ok(data) => view.data = Some(data),
+                        Err(error) => self.show_notice(format!(
+                            "{}: {error}",
+                            t(self.lang, "Review failed", "审阅失败")
+                        )),
+                    }
+                }
+            }
             JobDone::TaskDone {
                 name,
                 merged,
@@ -15938,6 +16016,8 @@ impl ApplicationHandler<HostEvent> for Host {
             pending_transport_connects: 0,
             task_dialog: None,
             tasks_view: None,
+            task_review: None,
+            task_checks: Vec::new(),
             attention_inbox: mtty_ui::attention::Inbox::default(),
             attention_open: false,
             command_history: None,
@@ -16274,6 +16354,7 @@ impl ApplicationHandler<HostEvent> for Host {
                     pip.window.request_redraw();
                 }
             }
+            state.poll_task_checks();
             state.reap_exited();
             state.save_scrollback_periodically();
             let drawable = window_drawable(&state.window, state.occluded);
