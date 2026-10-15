@@ -1185,6 +1185,7 @@ enum JobDone {
         task: mtty_ui::tasks::Task,
         result: Result<mtty_ui::task_review::Review, String>,
     },
+    TaskReviewRequested(Result<mtty_ui::tasks::Task, String>),
     /// A merge (`merged`) or discard finished; the window then reloads.
     TaskDone {
         name: String,
@@ -5428,6 +5429,7 @@ enum Cmd {
     /// Agent tasks in git worktrees (B2.4).
     NewTask,
     Tasks,
+    ReviewCurrentTask,
     AttentionInbox,
     NextAttention,
     /// The active pane's last command output (OSC 133, B2.3).
@@ -5561,6 +5563,10 @@ impl State {
             ),
             (Cmd::NewTask, t(l, "New Agent Task…", "新建 Agent 任务…")),
             (Cmd::Tasks, t(l, "Agent Tasks…", "Agent 任务…")),
+            (
+                Cmd::ReviewCurrentTask,
+                t(l, "Review Current Task…", "审阅当前任务…"),
+            ),
             (Cmd::AttentionInbox, t(l, "Attention Inbox…", "待处理事项…")),
             (
                 Cmd::NextAttention,
@@ -6037,6 +6043,13 @@ impl State {
                     self.show_notice(
                         t_lang(self.lang, "No pending tasks", "没有待处理任务").into(),
                     );
+                }
+            }
+            Cmd::ReviewCurrentTask => {
+                if let Some(cwd) = self.cwd() {
+                    self.spawn_job(move || {
+                        JobDone::TaskReviewRequested(mtty_ui::task_review::task_at(&cwd))
+                    });
                 }
             }
             Cmd::Tasks => match self.cwd() {
@@ -14826,6 +14839,13 @@ impl State {
                     let msg = format!("{} {name}: {e}", t(self.lang, "Diff failed", "diff 失败"));
                     self.show_notice(msg);
                 }
+            },
+            JobDone::TaskReviewRequested(result) => match result {
+                Ok(task) => self.open_task_review(task),
+                Err(error) => self.show_notice(format!(
+                    "{}: {error}",
+                    t(self.lang, "No task here", "此处没有任务")
+                )),
             },
             JobDone::TaskReviewLoaded { task, result } => {
                 if let Some(view) = self

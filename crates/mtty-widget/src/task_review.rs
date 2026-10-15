@@ -255,7 +255,7 @@ impl State {
         self.tabs[index].active = id.clone();
         if let Some(pane) = self.tabs[index].panes.iter_mut().find(|pane| pane.id == id) {
             let payload = input::encode_paste(text, pane.term.screen().bracketed_paste());
-            pane.term.write(payload.as_bytes());
+            pane.term.write(&payload);
             pane.term.write(b"\r");
             return true;
         }

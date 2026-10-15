@@ -12,6 +12,19 @@ const FILE_LIMIT: usize = 128 * 1024;
 const SNAPSHOT_LIMIT: usize = 4 * 1024 * 1024;
 static STORE: Mutex<()> = Mutex::new(());
 
+pub fn task_at(dir: &Path) -> Result<Task, String> {
+    let cwd = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    crate::tasks::list(dir)?
+        .into_iter()
+        .find(|task| {
+            let root = std::fs::canonicalize(&task.path).unwrap_or_else(|_| task.path.clone());
+            cwd.starts_with(root)
+        })
+        .ok_or_else(|| {
+            "this directory is not an Agent task worktree; open Agent Tasks to choose one".into()
+        })
+}
+
 #[derive(Clone, Debug)]
 pub struct FileDiff {
     pub path: String,
@@ -412,6 +425,8 @@ mod tests {
         command(&root, &["add", "."]);
         command(&root, &["commit", "-qm", "base"]);
         let task = crate::tasks::create(&root, "review").unwrap();
+        assert_eq!(task_at(&task.path).unwrap(), task);
+        assert!(task_at(&root).is_err());
         std::fs::write(task.path.join("committed.txt"), "committed\n").unwrap();
         command(&task.path, &["add", "committed.txt"]);
         command(&task.path, &["commit", "-qm", "committed"]);
