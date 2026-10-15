@@ -50,6 +50,7 @@ pub struct Terminal {
     cols: u16,
     exited: bool,
     cwd: Option<String>,
+    cwd_host: Option<String>,
     cwd_checked: std::time::Instant,
     cwd_reported: bool,
     title: Option<String>,
@@ -618,6 +619,7 @@ impl Terminal {
             cols,
             exited: false,
             cwd,
+            cwd_host: None,
             cwd_checked: std::time::Instant::now(),
             cwd_reported: false,
             title: None,
@@ -1023,6 +1025,11 @@ impl Terminal {
         self.cwd.as_deref()
     }
 
+    /// OSC 7's URI authority; absent for a process-directory fallback.
+    pub fn cwd_host(&self) -> Option<&str> {
+        self.cwd_host.as_deref()
+    }
+
     /// The child process id, if the platform exposes one.
     pub fn pid(&self) -> Option<u32> {
         if let Some(host) = &self.host {
@@ -1170,6 +1177,10 @@ impl Terminal {
             b"7" => {
                 if let Some(path) = parse_osc7(payload) {
                     self.cwd = Some(path);
+                    self.cwd_host = payload
+                        .strip_prefix("file://")
+                        .and_then(|rest| rest.split_once('/'))
+                        .map(|(host, _)| host.to_owned());
                     self.cwd_reported = true;
                 }
             }
