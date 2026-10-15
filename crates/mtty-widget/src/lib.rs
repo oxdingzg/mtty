@@ -2101,6 +2101,8 @@ struct State {
     details_w: f32,
     /// Agent CLIs found on PATH, and when that was checked.
     agents_detected: Option<(Instant, Vec<bool>)>,
+    /// Briefly suppress repeated clicks while the CLI takes over the terminal.
+    miao_launch_pending: Option<(String, Instant)>,
     /// Settings as last loaded/saved, to write back only what changed.
     saved_settings: Vec<(&'static str, String)>,
     /// Where settings came from when there was no config.toml.
@@ -4256,6 +4258,7 @@ impl State {
     }
 
     fn chrome(&mut self, ctx: &egui::Context) {
+        self.refresh_agents_detected();
         // Shared, host-agnostic chrome (menu/tabs/sidebar/details/status).
         chrome::render(ctx, self);
         self.pane_context_menu(ctx);
@@ -15843,6 +15846,7 @@ impl ApplicationHandler<HostEvent> for Host {
             jobs_tx,
             jobs_rx,
             agents_detected: None,
+            miao_launch_pending: None,
             ui_resize_hover: false,
             #[cfg(windows)]
             window_resize_hover: false,
@@ -18645,6 +18649,46 @@ impl chrome::Chrome for State {
     }
     fn read_only(&self) -> bool {
         self.read_only
+    }
+    fn can_launch_miao(&self) -> bool {
+        let installed = mtty_ui::integration::AGENTS
+            .iter()
+            .position(|agent| agent.name == "miao")
+            .and_then(|index| self.agents_detected.as_ref()?.1.get(index))
+            .copied()
+            .unwrap_or(false);
+        if !installed || self.read_only {
+            return false;
+        }
+        let Some(pane) = self.active_pane() else {
+            return false;
+        };
+        if self
+            .miao_launch_pending
+            .as_ref()
+            .is_some_and(|(id, at)| id == &pane.id && at.elapsed() < Duration::from_secs(2))
+        {
+            return false;
+        }
+        // Live terminal state restores the button on exit; a persisted agent
+        // report or a saved tab title can outlive the actual program.
+        !pane.term.exited()
+            && !pane.term.screen().alternate_screen()
+            && pane.term.foreground_command().is_none()
+    }
+    fn on_launch_miao(&mut self) {
+        if !self.can_launch_miao() {
+            return;
+        }
+        let Some(tab) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
+        let Some(pane) = tab.panes.iter_mut().find(|pane| pane.id == tab.active) else {
+            return;
+        };
+        pane.term.write(b"miao\r");
+        self.miao_launch_pending = Some((pane.id.clone(), Instant::now()));
+        self.window.request_redraw();
     }
     fn status_right(&self) -> String {
         if let Some(ed) = self.active_editor() {

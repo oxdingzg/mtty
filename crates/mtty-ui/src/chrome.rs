@@ -934,6 +934,12 @@ pub trait Chrome {
     }
     fn set_queue_input(&mut self, input: String) {}
 
+    /// A local CLI is installed and the active terminal is ready for it.
+    fn can_launch_miao(&self) -> bool {
+        false
+    }
+    /// Type `miao` and Enter into the active terminal, without making a tab.
+    fn on_launch_miao(&mut self) {}
     fn on_new_tab(&mut self) {}
     fn on_switch_tab(&mut self, i: usize) {}
     fn on_close_tab(&mut self, i: usize) {}
@@ -1111,6 +1117,7 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
     let mut ungroup_tab = None;
     let mut new_tab = false;
     let mut font_delta = 0.0f32;
+    let mut launch_miao = false;
     let mut toggle_sidebar = false;
     let mut toggle_details = false;
     let mut details_sel = None;
@@ -1310,6 +1317,14 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
                         .clicked()
                     {
                         toggle_sidebar = true;
+                    }
+                    if !host_read_only
+                        && host.can_launch_miao()
+                        && icon_button(ui, Icon::Miao, bg_color(ch.text))
+                            .on_hover_text(t(lang, "Launch miao here", "在此启动 miao"))
+                            .clicked()
+                    {
+                        launch_miao = true;
                     }
                     if host.window_controls() {
                         ui.menu_button("≡", |ui| {
@@ -1572,6 +1587,9 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
     }
     if new_tab {
         host.on_new_tab();
+    }
+    if launch_miao {
+        host.on_launch_miao();
     }
     if font_delta != 0.0 {
         host.on_font_delta(font_delta);
@@ -2837,5 +2855,90 @@ mod tab_menu_tests {
             "hovering a tab chip must not report a window-drag region (got drag_hover=true)"
         );
         assert!(empty, "empty title space should still move the window");
+    }
+
+    #[test]
+    fn miao_launcher_dispatches_in_place_and_disappears_when_unavailable() {
+        struct Host {
+            available: bool,
+            read_only: bool,
+            launches: usize,
+            new_tabs: usize,
+        }
+        impl Chrome for Host {
+            fn draws_menu_bar(&self) -> bool {
+                false
+            }
+            fn show_sidebar(&self) -> bool {
+                false
+            }
+            fn show_details(&self) -> bool {
+                false
+            }
+            fn can_launch_miao(&self) -> bool {
+                self.available
+            }
+            fn read_only(&self) -> bool {
+                self.read_only
+            }
+            fn on_launch_miao(&mut self) {
+                self.launches += 1;
+                self.available = false;
+            }
+            fn on_new_tab(&mut self) {
+                self.new_tabs += 1;
+            }
+        }
+        let cat_center = |output: &egui::FullOutput| {
+            output.shapes.iter().find_map(|shape| match &shape.shape {
+                egui::Shape::Path(path) if path.closed && path.points.len() == 9 => {
+                    Some(egui::Rect::from_points(&path.points).center())
+                }
+                _ => None,
+            })
+        };
+        for read_only in [false, true] {
+            let ctx = test_ctx();
+            let frame = |host: &mut Host, events| {
+                ctx.run(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(800., 300.),
+                        )),
+                        events,
+                        ..Default::default()
+                    },
+                    |ctx| render(ctx, host),
+                )
+            };
+            let mut host = Host {
+                available: true,
+                read_only,
+                launches: 0,
+                new_tabs: 0,
+            };
+            frame(&mut host, vec![]);
+            let output = frame(&mut host, vec![]);
+            if read_only {
+                assert!(cat_center(&output).is_none());
+                continue;
+            }
+            let pos = cat_center(&output).expect("miao cat icon is visible");
+            frame(
+                &mut host,
+                vec![egui::Event::PointerMoved(pos), press(pos, true)],
+            );
+            frame(
+                &mut host,
+                vec![egui::Event::PointerMoved(pos), press(pos, false)],
+            );
+            assert_eq!(host.launches, 1);
+            assert_eq!(host.new_tabs, 0, "launcher must not create another tab");
+            assert!(cat_center(&frame(&mut host, vec![])).is_none());
+            // Returning to a shell or switching to another ready terminal restores it.
+            host.available = true;
+            assert!(cat_center(&frame(&mut host, vec![])).is_some());
+        }
     }
 }

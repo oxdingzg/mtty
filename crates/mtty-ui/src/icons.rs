@@ -6,6 +6,8 @@ pub enum Icon {
     Terminal,
     Info,
     Agent,
+    /// The miao CLI cat mark, drawn as vectors rather than a font glyph.
+    Miao,
     Outline,
     Git,
     Files,
@@ -37,6 +39,7 @@ pub fn glyph(icon: Icon) -> char {
     match icon {
         Icon::Terminal => '\u{ebdc}',
         Icon::Info => '\u{eac5}',                  // info-circle
+        Icon::Miao => 'M',                         // drawn as a cat by `draw`
         Icon::Agent => '\u{f00b}',                 // robot
         Icon::Outline => '\u{eb6b}',               // list
         Icon::Git | Icon::GitBranch => '\u{eab2}', // git-branch
@@ -65,6 +68,38 @@ pub fn glyph(icon: Icon) -> char {
 /// Draw `icon` centered in `rect`, filled with `color`.
 pub fn draw(p: &egui::Painter, rect: egui::Rect, icon: Icon, color: egui::Color32) {
     let size = rect.height().min(rect.width()).max(8.0);
+    if icon == Icon::Miao {
+        // The CLI's /\/\, (o.o), > ^ < mark stays legible at toolbar size.
+        let origin = rect.center() - egui::vec2(size, size) * 0.5;
+        let point = |x, y| origin + egui::vec2(x, y) * (size / 24.0);
+        let stroke = egui::Stroke::new((size / 14.0).max(1.0), color);
+        p.add(egui::Shape::closed_line(
+            [
+                (3., 12.),
+                (3., 3.),
+                (9., 7.),
+                (15., 7.),
+                (21., 3.),
+                (21., 12.),
+                (18., 20.),
+                (6., 20.),
+                (3., 14.),
+            ]
+            .into_iter()
+            .map(|(x, y)| point(x, y))
+            .collect(),
+            stroke,
+        ));
+        for x in [8., 16.] {
+            p.circle_filled(point(x, 12.), size / 15.0, color);
+        }
+        p.line_segment([point(11., 16.), point(13., 16.)], stroke);
+        for (x, end) in [(0., 6.), (24., 18.)] {
+            p.line_segment([point(x, 14.), point(end, 15.)], stroke);
+            p.line_segment([point(x, 18.), point(end, 17.)], stroke);
+        }
+        return;
+    }
     if matches!(
         icon,
         Icon::StateEmpty
