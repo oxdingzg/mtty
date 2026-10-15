@@ -118,7 +118,19 @@ jobs:
             xcrun notarytool submit "mtty-macos-$ARCH.zip" \
               --key ac_api_key.p8 --key-id "$APPLE_API_KEY_ID" \
               --issuer "$APPLE_API_ISSUER" --wait
-            xcrun stapler staple dist/mtty.app
+            # stapler fetches the ticket from Apple's ticket-delivery service,
+            # and the Intel runner has twice lost that connection mid-staple
+            # (NSURLErrorDomain -1005, stapler error 68).
+            for attempt in 1 2 3; do
+              if xcrun stapler staple dist/mtty.app; then
+                break
+              elif [ "$attempt" = 3 ]; then
+                exit 1
+              else
+                echo "staple attempt $attempt failed; retrying"
+                sleep 5
+              fi
+            done
             rm -f "mtty-macos-$ARCH.zip" ac_api_key.p8 cert.p12
           else
             echo "no signing secrets; shipping ad-hoc signed build"
