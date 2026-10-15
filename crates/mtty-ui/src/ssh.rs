@@ -461,7 +461,11 @@ fn transfer_args(destination: &str) -> Vec<String> {
         if let Some(port) = target.port {
             args.extend(["-p".into(), port.to_string()]);
         }
-        args.extend(["--".into(), target.dest]);
+        let destination = match target.user {
+            Some(user) => format!("{user}@{}", target.host),
+            None => target.host,
+        };
+        args.extend(["--".into(), destination]);
     } else {
         args.extend(["--".into(), destination.to_owned()]);
     }

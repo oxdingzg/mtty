@@ -3101,6 +3101,7 @@ dependencies = [
  "serde_json",
  "serial2",
  "tokio",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
