@@ -1,7 +1,7 @@
 # Third-party licences
 
 mtty itself is Apache-2.0 — see [`LICENSE`](../LICENSE). It is built on the
-crates below, 651 of them, each under its own licence. The licence
+crates below, 649 of them, each under its own licence. The licence
 texts follow the table, once per distinct text.
 
 *Generated from `Cargo.lock` by [`scripts/render-third-party-licenses.py`](../scripts/render-third-party-licenses.py),*
@@ -202,7 +202,6 @@ texts follow the table, once per distinct text.
 | gethostname 1.1.0 | Apache-2.0 | [codeberg.org/swsnr/gethostname.rs.git](https://codeberg.org/swsnr/gethostname.rs.git) |
 | getrandom 0.2.17 | MIT OR Apache-2.0 | [github.com/rust-random/getrandom](https://github.com/rust-random/getrandom) |
 | getrandom 0.3.4 | MIT OR Apache-2.0 | [github.com/rust-random/getrandom](https://github.com/rust-random/getrandom) |
-| getrandom 0.4.3 | MIT OR Apache-2.0 | [github.com/rust-random/getrandom](https://github.com/rust-random/getrandom) |
 | ghash 0.5.1 | Apache-2.0 OR MIT | [github.com/RustCrypto/universal-hashes](https://github.com/RustCrypto/universal-hashes) |
 | gio 0.18.4 | MIT | [github.com/gtk-rs/gtk-rs-core](https://github.com/gtk-rs/gtk-rs-core) |
 | gio-sys 0.18.1 | MIT | [github.com/gtk-rs/gtk-rs-core](https://github.com/gtk-rs/gtk-rs-core) |
@@ -368,7 +367,6 @@ texts follow the table, once per distinct text.
 | quick-xml 0.41.0 | MIT | [github.com/tafia/quick-xml](https://github.com/tafia/quick-xml) |
 | quote 1.0.47 | MIT OR Apache-2.0 | [github.com/dtolnay/quote](https://github.com/dtolnay/quote) |
 | r-efi 5.3.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | [github.com/r-efi/r-efi](https://github.com/r-efi/r-efi) |
-| r-efi 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | [github.com/r-efi/r-efi](https://github.com/r-efi/r-efi) |
 | rand 0.8.8 | MIT OR Apache-2.0 | [github.com/rust-random/rand](https://github.com/rust-random/rand) |
 | rand 0.9.5 | MIT OR Apache-2.0 | [github.com/rust-random/rand](https://github.com/rust-random/rand) |
 | rand_chacha 0.3.1 | MIT OR Apache-2.0 | [github.com/rust-random/rand](https://github.com/rust-random/rand) |
@@ -399,7 +397,7 @@ texts follow the table, once per distinct text.
 | rustix 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [github.com/bytecodealliance/rustix](https://github.com/bytecodealliance/rustix) |
 | rustix 1.1.5 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [github.com/bytecodealliance/rustix](https://github.com/bytecodealliance/rustix) |
 | rustix-openpty 0.2.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [github.com/sunfishcode/rustix-openpty](https://github.com/sunfishcode/rustix-openpty) |
-| rustls 0.23.45 | Apache-2.0 OR ISC OR MIT | [github.com/rustls/rustls](https://github.com/rustls/rustls) |
+| rustls 0.23.46 | Apache-2.0 OR ISC OR MIT | [github.com/rustls/rustls](https://github.com/rustls/rustls) |
 | rustls-pki-types 1.15.1 | MIT OR Apache-2.0 | [github.com/rustls/pki-types](https://github.com/rustls/pki-types) |
 | rustls-webpki 0.103.15 | ISC | [github.com/rustls/webpki](https://github.com/rustls/webpki) |
 | rustversion 1.0.23 | MIT OR Apache-2.0 | [github.com/dtolnay/rustversion](https://github.com/dtolnay/rustversion) |
@@ -1948,7 +1946,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-This exact text is filed by 41 crates, among them arborium-asciidoc 2.18.2, arborium-hcl 2.18.2, arborium-jinja2 2.18.2, codespan-reporting 0.11.1, … winapi-x86_64-pc-windows-gnu 0.4.0.
+This exact text is filed by 40 crates, among them arborium-asciidoc 2.18.2, arborium-hcl 2.18.2, arborium-jinja2 2.18.2, codespan-reporting 0.11.1, … winapi-x86_64-pc-windows-gnu 0.4.0.
 
 ```text
 NOT FOUND
@@ -4064,7 +4062,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-This exact text is filed by getrandom 0.2.17, getrandom 0.3.4, getrandom 0.4.3, rand_chacha 0.3.1.
+This exact text is filed by getrandom 0.2.17, getrandom 0.3.4, rand_chacha 0.3.1.
 
 ```text
 Apache License
@@ -9592,7 +9590,7 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ```
 
-This exact text is filed by rustls 0.23.45.
+This exact text is filed by rustls 0.23.46.
 
 ```text
 ISC License (ISC)
@@ -9948,7 +9946,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-This exact text is filed by 109 crates, among them arborium-ada 2.18.2, arborium-batch 2.18.2, arborium-commonlisp 2.18.2, arborium-css 2.18.2, … winapi-x86_64-pc-windows-gnu 0.4.0.
+This exact text is filed by 108 crates, among them arborium-ada 2.18.2, arborium-batch 2.18.2, arborium-commonlisp 2.18.2, arborium-css 2.18.2, … winapi-x86_64-pc-windows-gnu 0.4.0.
 
 ```text
 NOT FOUND
@@ -12150,37 +12148,6 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-This exact text is filed by getrandom 0.4.3.
-
-```text
-Copyright (c) 2018-2026 The rust-random Project Developers
-Copyright (c) 2014 The Rust Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-```
-
 This exact text is filed by ghash 0.5.1.
 
 ```text
@@ -13934,7 +13901,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-This exact text is filed by rustls 0.23.45.
+This exact text is filed by rustls 0.23.46.
 
 ```text
 Copyright (c) 2016 Joseph Birr-Pixton <jpixton@gmail.com>

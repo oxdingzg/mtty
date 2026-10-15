@@ -102,9 +102,14 @@ jobs:
           if [ -n "$APPLE_CERT_P12" ] && [ -n "$APPLE_API_KEY_P8" ]; then
             echo "$APPLE_CERT_P12" | base64 --decode > cert.p12
             security create-keychain -p actions tmp.keychain
+            security unlock-keychain -p actions tmp.keychain
             security import cert.p12 -k tmp.keychain -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
             security set-key-partition-list -S apple-tool:,apple: -s -k actions tmp.keychain
-            IDENTITY=$(security find-identity -v -p codesigning tmp.keychain | awk '{print $2}' | head -1)
+            # codesign resolves identity hashes through the user search list,
+            # not the keychain named on the find-identity call above; the bare
+            # name resolves to ~/Library/Keychains/tmp.keychain-db.
+            security list-keychains -d user -s "$HOME/Library/Keychains/tmp.keychain-db" $(security list-keychains -d user | tr -d '"' | tr '\n' ' ')
+            IDENTITY=$(security find-identity -v -p codesigning tmp.keychain | grep '"Developer ID Application' | head -1 | awk '{print $2}')
             codesign --force --deep --options runtime --sign "$IDENTITY" dist/mtty.app
             (cd dist && zip -qry "../mtty-macos-$ARCH.zip" mtty.app)
             # The App Store Connect API key authenticates the notary service; an
