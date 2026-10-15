@@ -156,7 +156,7 @@ point); problems fixed in M0–M3 are no longer listed.
 | Feature | Status | Notes |
 |---|---|---|
 | Config file + ghostty / alacritty import | Works | Fixed now: a `config.toml` with syntax errors is reported with the reason |
-| Shell integration (OSC 7, OSC 133, history) | Works | zsh, bash, fish, PowerShell |
+| Shell integration (OSC 7, OSC 133, history) | Works | zsh, bash, fish, PowerShell. Command Output History retains up to 50 finished commands / 8 MiB per pane for the current session, with command text, directory, exit status and elapsed time. Filter failures, browse/copy/export output, share it with Composer or an Agent, and review an editable command before rerunning it in its original idle pane and known directory. Output capture is capped at 2 MiB per command; visual previews limit long lines, while copy/export retain captured text |
 | URL schemes and single-instance forwarding | Works | From the command line and from a macOS browser/Finder |
 | MTP control plane and `mtty-cli` | Works | Covered by the real-window smoke |
 | Version check and update | Works | SHA-256 and a required minisign signature are checked in process; macOS install-and-relaunch checked end to end; AppImage signed update verified in a real Linux window; Windows desktop checks are recorded in ACCEPTANCE |

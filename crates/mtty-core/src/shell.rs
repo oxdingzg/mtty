@@ -29,6 +29,12 @@ fi
 [[ -r "${ZDOTDIR:-$HOME}/.zshenv" ]] && source "${ZDOTDIR:-$HOME}/.zshenv"
 
 _mtty_osc7() { printf '\033]7;file://%s%s\033\\' "${HOST:-localhost}" "$PWD"; }
+_mtty_meta() {
+  local c=$1
+  c=${c//\%/%25}; c=${c//$'\e'/%1B}; c=${c//$'\a'/%07}
+  c=${c//$'\n'/%0A}; c=${c//$'\r'/%0D}
+  printf '\033]133;E;%s\007' "$c"
+}
 # OSC 133 semantic prompts: C when a command starts, D;<exit> when it ends,
 # so the terminal can tell a command's output apart from the prompt.
 _mtty_precmd() {
@@ -37,6 +43,7 @@ _mtty_precmd() {
   _mtty_osc7
 }
 _mtty_preexec() {
+  _mtty_meta "$1"
   printf '\033]133;C\007'
   local cli="${MTTY_CLI:-mtty-cli}"
   command -v "$cli" >/dev/null 2>&1 || return 0
@@ -63,15 +70,22 @@ esac
 [[ $- == *i* ]] || return 0
 
 _mtty_osc7() { printf '\e]7;file://%s%s\e\\' "${HOSTNAME:-localhost}" "$PWD"; }
+_mtty_meta() {
+  local c=$1
+  c=${c//\%/%25}; c=${c//$'\e'/%1B}; c=${c//$'\a'/%07}
+  c=${c//$'\n'/%0A}; c=${c//$'\r'/%0D}
+  printf '\e]133;E;%s\a' "$c"
+}
 _mtty_hist() { local h; h=$(HISTTIMEFORMAT= builtin history 1); [[ $h =~ ^\ *([0-9]+)\*?\ +(.*)$ ]] && printf '%s\n%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; }
 _mtty_hist_last=$(_mtty_hist | head -n 1)
 _mtty_precmd() {
   local s=$?
-  printf '\e]133;D;%s\a' "$s"
-  _mtty_osc7
   local h n
   h=$(_mtty_hist)
   n=${h%%$'\n'*}
+  if [[ -n $n && $n != "$_mtty_hist_last" ]]; then _mtty_meta "${h#*$'\n'}"; fi
+  printf '\e]133;D;%s\a' "$s"
+  _mtty_osc7
   if [[ -n $n && $n != "$_mtty_hist_last" ]]; then
     _mtty_hist_last=$n
     local cli="${MTTY_CLI:-mtty-cli}"
@@ -113,6 +127,7 @@ function __mtty_osc7 --on-variable PWD
     printf '\e]7;file://%s%s\e\\' $hostname "$PWD"
 end
 function __mtty_preexec --on-event fish_preexec
+    printf '\e]133;E;%s\a' (string escape --style=url -- "$argv[1]")
     printf '\e]133;C\a'
     set -l cli $MTTY_CLI
     test -n "$cli"; or set cli mtty-cli
@@ -197,6 +212,7 @@ function global:__mttyWrapReadLine {
     function global:PSConsoleHostReadLine {
         $line = & $global:__mttyOrigReadLine
         if ($line -and $line.Trim()) {
+            [Console]::Write("$([char]27)]133;E;$([Uri]::EscapeDataString($line))$([char]7)")
             [Console]::Write("$([char]27)]133;C$([char]7)")
             $global:__mttyRan = $true
             __mttyRecord $line
