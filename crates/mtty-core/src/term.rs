@@ -51,6 +51,9 @@ pub struct Terminal {
     exited: bool,
     cwd: Option<String>,
     cwd_host: Option<String>,
+    /// Authority of the local prompt before the remote bootstrap marker.
+    local_cwd_origin: Option<String>,
+    remote_cwd_active: bool,
     cwd_checked: std::time::Instant,
     cwd_reported: bool,
     title: Option<String>,
@@ -632,6 +635,8 @@ impl Terminal {
             exited: false,
             cwd,
             cwd_host: None,
+            local_cwd_origin: None,
+            remote_cwd_active: false,
             cwd_checked: std::time::Instant::now(),
             cwd_reported: false,
             title: None,
@@ -1048,6 +1053,31 @@ impl Terminal {
         self.cwd_host.as_deref()
     }
 
+    /// A remote-reported directory, never the SSH client's local process cwd.
+    pub fn remote_cwd(&self) -> Option<&str> {
+        if self.remote_cwd_active {
+            self.cwd.as_deref()
+        } else {
+            None
+        }
+    }
+
+    pub fn remote_cwd_origin(&self) -> Option<&str> {
+        if self.remote_cwd_active {
+            self.local_cwd_origin.as_deref()
+        } else {
+            None
+        }
+    }
+
+    /// Restore only when the session explicitly saved a remote-reported cwd.
+    pub fn restore_remote_cwd(&mut self, cwd: String, local_origin: Option<String>) {
+        self.cwd = Some(cwd);
+        self.remote_cwd_active = true;
+        self.local_cwd_origin = local_origin;
+        self.cwd_reported = true;
+    }
+
     /// The child process id, if the platform exposes one.
     pub fn pid(&self) -> Option<u32> {
         if let Some(host) = &self.host {
@@ -1233,6 +1263,21 @@ impl Terminal {
         match code {
             b"7" => {
                 if let Some(path) = parse_osc7(payload) {
+                    let authority = payload
+                        .strip_prefix("file://")
+                        .and_then(|rest| rest.split_once('/'))
+                        .map(|(host, _)| host.to_owned());
+                    if authority.as_deref() == Some("mtty-remote") {
+                        if !self.remote_cwd_active {
+                            self.local_cwd_origin = self.cwd_host.clone();
+                        }
+                        self.remote_cwd_active = true;
+                    } else if self.remote_cwd_active
+                        && self.local_cwd_origin.is_some()
+                        && authority == self.local_cwd_origin
+                    {
+                        self.remote_cwd_active = false;
+                    }
                     self.cwd = Some(path);
                     self.cwd_host = payload
                         .strip_prefix("file://")
@@ -2282,6 +2327,27 @@ mod tests {
         assert_eq!(term.command_history().len(), MAX_HISTORY_COMMANDS);
         assert!(term.command_history().front().unwrap().id > 2);
         assert!(!term.command_running());
+    }
+
+    #[test]
+    fn remote_cwd_survives_host_aliases_and_clears_on_the_local_prompt() {
+        let mut term = make();
+        term.feed_for_test(b"\x1b]7;file://local.example/work/local\x07");
+        assert_eq!(term.remote_cwd(), None);
+        term.feed_for_test(b"\x1b]7;file://mtty-remote/work/remote\x07");
+        term.feed_for_test(b"\x1b]7;file://server-canonical.example/work/project\x07");
+        assert_eq!(term.remote_cwd(), Some("/work/project"));
+        assert_eq!(term.remote_cwd_origin(), Some("local.example"));
+        let mut restored = make();
+        restored.restore_remote_cwd(
+            "/work/project".into(),
+            term.remote_cwd_origin().map(str::to_owned),
+        );
+        assert_eq!(restored.remote_cwd(), Some("/work/project"));
+        restored.feed_for_test(b"\x1b]7;file://local.example/work/local\x07");
+        assert_eq!(restored.remote_cwd(), None);
+        term.feed_for_test(b"\x1b]7;file://local.example/work/local\x07");
+        assert_eq!(term.remote_cwd(), None);
     }
 
     #[test]
