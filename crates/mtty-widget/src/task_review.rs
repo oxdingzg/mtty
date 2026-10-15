@@ -134,7 +134,11 @@ impl State {
                         for row in rows {
                             let (number, text) = &view.lines[row];
                             let label = format!("{:>5} {text}", number.map_or(String::new(), |line| line.to_string()));
-                            if ui.add(egui::Label::new(egui::RichText::new(label).monospace()).sense(egui::Sense::click()).wrap_mode(egui::TextWrapMode::Extend)).clicked() {
+                            let color = if text.starts_with('+') && !text.starts_with("+++") { self.theme.palette[2] }
+                                else if text.starts_with('-') && !text.starts_with("---") { self.theme.palette[1] }
+                                else if text.starts_with("@@") { self.theme.palette[6] }
+                                else { self.theme.fg };
+                            if ui.add(egui::Label::new(egui::RichText::new(label).monospace().color(chrome_rgb(color))).sense(egui::Sense::click()).wrap_mode(egui::TextWrapMode::Extend)).clicked() {
                                 if let Some(line) = number { view.first_line = *line; view.last_line = *line; }
                             }
                         }
@@ -162,7 +166,8 @@ impl State {
                 for check in data.state.checks.iter().rev().take(5) {
                     let result = match check.exit { Some(0) => t(lang, "Passed", "通过"), Some(_) => t(lang, "Failed", "失败"), None => t(lang, "No captured exit / cancelled", "未捕获退出码／已取消") };
                     let stale = if check.revision != data.snapshot.fingerprint { t(lang, " · older revision", " · 较早版本") } else { "" };
-                    ui.collapsing(format!("{result}{stale} · {} · {:?}", check.command, check.exit), |ui| {
+                    let exit = check.exit.map_or_else(|| "?".to_owned(), |code| code.to_string());
+                    ui.collapsing(format!("{result}{stale} · {} · exit {exit}", check.command), |ui| {
                         egui::ScrollArea::both().id_salt(("check-output", check.finished_at)).max_height(100.0).show(ui, |ui| { ui.label(egui::RichText::new(&check.output).monospace()); });
                     });
                 }
