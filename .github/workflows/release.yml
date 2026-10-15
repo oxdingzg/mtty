@@ -127,8 +127,8 @@ jobs:
               elif [ "$attempt" = 3 ]; then
                 exit 1
               else
+                sleep "$((attempt * 15))"
                 echo "staple attempt $attempt failed; retrying"
-                sleep 5
               fi
             done
             rm -f "mtty-macos-$ARCH.zip" ac_api_key.p8 cert.p12
