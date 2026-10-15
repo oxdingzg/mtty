@@ -39,6 +39,7 @@ enum HostEvent {
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
+mod acp_browser;
 mod attention;
 mod command_history;
 mod data_preview;
@@ -1257,6 +1258,14 @@ enum JobDone {
     KeyImported(Result<String, String>),
     /// Streamed text from an ACP agent (ADR 0040, A2).
     AcpUpdate(String),
+    AcpEnvelope {
+        epoch: u64,
+        message: Box<JobDone>,
+    },
+    AcpLog(String),
+    AcpClosed(String),
+    AcpSettings(serde_json::Value),
+    AcpInventory(Vec<mtty_ui::acp_adapters::Adapter>),
     /// An ACP agent's diff: replace `path` with the agent's new text, as an
     /// A1 proposal.
     AcpDiff {
@@ -1339,6 +1348,14 @@ struct KeyImportDialog {
 /// A running ACP session (ADR 0040, A2): the client, its session id and the
 /// transcript shown in the window.
 struct AcpSession {
+    epoch: u64,
+    profile: mtty_config::AcpAgent,
+    connected: bool,
+    log: String,
+    advertised: serde_json::Value,
+    settings: Vec<mtty_acp::Setting>,
+    settings_pending: Option<u64>,
+    prompt_id: Option<u64>,
     client: mtty_acp::Client,
     cwd: String,
     session: Option<String>,
@@ -1362,18 +1379,27 @@ struct AcpStart {
     command: String,
     session_id: String,
     error: Option<String>,
+    directory: String,
+    inventory: Vec<mtty_ui::acp_adapters::Adapter>,
+    scanned: bool,
 }
 
 /// Bridges an ACP agent's callbacks to the UI thread (ADR 0040, A2).
 struct AcpBridge {
+    epoch: u64,
     /// `Mutex` because the handler must be `Sync`; sends are cheap.
     tx: std::sync::Mutex<std::sync::mpsc::Sender<JobDone>>,
     proxy: EventLoopProxy<HostEvent>,
 }
 
 impl AcpBridge {
-    fn new(tx: std::sync::mpsc::Sender<JobDone>, proxy: EventLoopProxy<HostEvent>) -> Self {
+    fn new(
+        tx: std::sync::mpsc::Sender<JobDone>,
+        proxy: EventLoopProxy<HostEvent>,
+        epoch: u64,
+    ) -> Self {
         AcpBridge {
+            epoch,
             tx: std::sync::Mutex::new(tx),
             proxy,
         }
@@ -1381,7 +1407,10 @@ impl AcpBridge {
 
     fn send(&self, done: JobDone) {
         if let Ok(tx) = self.tx.lock() {
-            let _ = tx.send(done);
+            let _ = tx.send(JobDone::AcpEnvelope {
+                epoch: self.epoch,
+                message: Box::new(done),
+            });
         }
         let _ = self.proxy.send_event(HostEvent::Wake);
     }
@@ -1389,6 +1418,12 @@ impl AcpBridge {
 
 impl mtty_acp::Handler for AcpBridge {
     fn on_update(&self, _session: &str, update: &serde_json::Value) {
+        if matches!(
+            update.get("sessionUpdate").and_then(|value| value.as_str()),
+            Some("config_option_update" | "current_mode_update")
+        ) {
+            self.send(JobDone::AcpSettings(update.clone()));
+        }
         if let Some((path, text)) = acp_diff(update) {
             self.send(JobDone::AcpDiff { path, text });
         }
@@ -1404,7 +1439,13 @@ impl mtty_acp::Handler for AcpBridge {
         });
     }
     fn on_error(&self, message: &str) {
-        self.send(JobDone::AcpUpdate(format!("\n[error] {message}\n")));
+        self.send(JobDone::AcpLog(format!("\n[protocol error] {message}\n")));
+    }
+    fn on_log(&self, message: &str) {
+        self.send(JobDone::AcpLog(message.into()));
+    }
+    fn on_closed(&self, message: &str) {
+        self.send(JobDone::AcpClosed(message.into()));
     }
     fn read_text_file(&self, path: &str) -> Option<String> {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1969,6 +2010,7 @@ struct State {
     key_import: Option<KeyImportDialog>,
     /// A running ACP agent session (ADR 0040, A2).
     acp: Option<AcpSession>,
+    acp_epoch: u64,
     acp_writes: HashMap<String, (u64, std::sync::mpsc::Sender<bool>)>,
     /// The ACP start form, if open.
     acp_start: Option<AcpStart>,
@@ -2094,6 +2136,8 @@ struct State {
     lsp: mtty_lsp::Lsp,
     /// `MTTY_QA_COMMAND` has run.
     qa_done: bool,
+    /// Opt-in timed palette actions for native workflow verification.
+    qa_script: Vec<(Duration, String)>,
     /// The pointer resting on editor text, until a hover is asked for.
     hover_rest: Option<HoverRest>,
     hover: Option<HoverPopup>,
@@ -5516,6 +5560,7 @@ enum Cmd {
     RejectAgentEdit,
     /// Start an ACP agent session (ADR 0040, A2).
     AcpAgent,
+    StartAcpDefault,
     Composer,
     OpenQuickly,
     CheckUpdates,
@@ -5699,6 +5744,10 @@ impl State {
                 t(l, "Reject Agent Edit", "拒绝 Agent 修改"),
             ),
             (Cmd::AcpAgent, t(l, "ACP Agent…", "ACP Agent…")),
+            (
+                Cmd::StartAcpDefault,
+                t(l, "Start Configured ACP Agent", "启动已配置的 ACP Agent"),
+            ),
             (Cmd::OpenQuickly, t(l, "Open Quickly", "快速打开")),
             (Cmd::QuickTerminal, t(l, "Quick Terminal", "快速终端")),
             (Cmd::CheckUpdates, t(l, "Check for Updates", "检查更新")),
@@ -6300,7 +6349,17 @@ impl State {
                 }
             }
             Cmd::AcpAgent => {
-                self.acp_start = Some(AcpStart::default());
+                self.open_acp_launcher();
+            }
+            Cmd::StartAcpDefault => {
+                if self.tabs.get(self.active_tab).is_some_and(|tab| tab.ssh) {
+                    self.open_acp_launcher();
+                } else if let Some(agent) = self.acp_agents.first().cloned() {
+                    self.acp_start = None;
+                    self.start_acp(agent);
+                } else {
+                    self.open_acp_launcher();
+                }
             }
             Cmd::AcceptAgentEdit => {
                 if self
@@ -13125,6 +13184,10 @@ impl State {
         let Some(label) = mtty_config::env("QA_COMMAND") else {
             return;
         };
+        self.qa_palette_command(&label);
+    }
+
+    fn qa_palette_command(&mut self, label: &str) {
         let lang = self.lang;
         self.lang = mtty_ui::i18n::Lang::En;
         let cmd = self
@@ -13360,9 +13423,10 @@ impl State {
             tab.editors
                 .iter()
                 .find(|e| {
-                    e.path == path
-                        || real.is_some()
-                            && std::fs::canonicalize(&e.path).ok().as_ref() == real.as_ref()
+                    e.remote.is_none()
+                        && (e.path == path
+                            || real.is_some()
+                                && std::fs::canonicalize(&e.path).ok().as_ref() == real.as_ref())
                 })
                 .map(|e| (ti, e.id.clone()))
         });
@@ -13789,7 +13853,16 @@ impl State {
         let Some(acp) = self.acp.as_mut() else {
             return;
         };
+        if !acp.connected {
+            return;
+        }
         if let Some(error) = error {
+            if acp.prompt_id == Some(id) {
+                acp.prompt_id = None;
+            }
+            if acp.settings_pending == Some(id) {
+                acp.settings_pending = None;
+            }
             let msg = error
                 .get("message")
                 .and_then(|v| v.as_str())
@@ -13800,6 +13873,19 @@ impl State {
             return;
         }
         if id == acp.initialize_id {
+            acp.advertised = result.clone();
+            if result
+                .get("protocolVersion")
+                .and_then(|value| value.as_u64())
+                != Some(1)
+            {
+                acp.status = "unsupported ACP protocol version".into();
+                acp.log
+                    .push_str("\n[error] This client negotiates ACP protocol version 1.\n");
+                acp.connected = false;
+                let _ = acp.client.shutdown();
+                return;
+            }
             acp.load_supported = result
                 .pointer("/agentCapabilities/loadSession")
                 .and_then(|v| v.as_bool())
@@ -13840,6 +13926,7 @@ impl State {
         }
         if acp.connect_id == Some(id) {
             acp.connect_id = None;
+            acp.settings = mtty_acp::session_settings(&result);
             acp.session = result
                 .get("sessionId")
                 .and_then(|v| v.as_str())
@@ -13853,6 +13940,23 @@ impl State {
             .into();
             self.window.request_redraw();
             return;
+        }
+        if acp.settings_pending == Some(id) {
+            acp.settings_pending = None;
+            if result.get("configOptions").is_some() || result.get("modes").is_some() {
+                acp.settings = mtty_acp::session_settings(&result);
+            }
+            acp.status = if acp.prompt_id.is_some() {
+                "working"
+            } else {
+                "ready"
+            }
+            .into();
+            self.window.request_redraw();
+            return;
+        }
+        if acp.prompt_id == Some(id) {
+            acp.prompt_id = None;
         }
         if let Some(session) = result.get("sessionId").and_then(|v| v.as_str()) {
             acp.session = Some(session.to_string());
@@ -13870,27 +13974,56 @@ impl State {
     /// Launch a configured ACP agent and open its transcript (ADR 0040, A2).
     fn start_acp(&mut self, agent: mtty_config::AcpAgent) {
         let cwd = self
-            .cwd()
+            .acp_start
+            .as_ref()
+            .map(|start| std::path::PathBuf::from(&start.directory))
+            .filter(|path| !path.as_os_str().is_empty())
+            .or_else(|| self.cwd())
             .or_else(mtty_config::home_dir)
             .unwrap_or_default();
+        let cwd = mtty_ui::file_link::local_path(".", cwd.to_str());
+        if !cwd.is_absolute() || !cwd.is_dir() {
+            if self.acp_start.is_none() {
+                self.open_acp_launcher();
+            }
+            if let Some(start) = &mut self.acp_start {
+                start.error = Some("choose an existing absolute local working directory".into());
+            }
+            return;
+        }
+        self.acp_epoch = self.acp_epoch.saturating_add(1);
+        let epoch = self.acp_epoch;
+        let profile = agent.clone();
         let Some((program, args)) = agent.command.split_first() else {
             return;
         };
         let program = program.clone();
         let args = args.to_vec();
-        let bridge = Arc::new(AcpBridge::new(self.jobs_tx.clone(), self.proxy.clone()));
+        let bridge = Arc::new(AcpBridge::new(
+            self.jobs_tx.clone(),
+            self.proxy.clone(),
+            epoch,
+        ));
         let env: Vec<_> = agent.env.into_iter().collect();
-        let resume_id = self
-            .acp_start
-            .as_ref()
-            .map(|s| s.session_id.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .or(agent.session_id);
+        let resume_id = match self.acp_start.as_ref() {
+            Some(start) => {
+                Some(start.session_id.trim().to_owned()).filter(|value| !value.is_empty())
+            }
+            None => agent.session_id,
+        };
         match mtty_acp::Client::spawn(&program, &args, Some(cwd.as_path()), &env, bridge) {
             Ok(client) => {
                 client.enable_terminals(&cwd);
                 let initialize_id = client.initialize("mtty", env!("CARGO_PKG_VERSION"));
                 self.acp = Some(AcpSession {
+                    epoch,
+                    profile,
+                    connected: true,
+                    log: String::new(),
+                    advertised: serde_json::Value::Null,
+                    settings: Vec::new(),
+                    settings_pending: None,
+                    prompt_id: None,
                     client,
                     cwd: cwd.to_string_lossy().into_owned(),
                     session: None,
@@ -13911,6 +14044,9 @@ impl State {
                 self.window.focus_window();
             }
             Err(e) => {
+                if self.acp_start.is_none() {
+                    self.open_acp_launcher();
+                }
                 if let Some(start) = self.acp_start.as_mut() {
                     start.error = Some(format!("{}: {e}", agent.name));
                 }
@@ -13920,87 +14056,7 @@ impl State {
 
     /// The ACP start form (ADR 0040, A2).
     fn acp_start_window(&mut self, ctx: &egui::Context) {
-        use mtty_ui::i18n::t;
-        let lang = self.lang;
-        let agents = self.acp_agents.clone();
-        let Some(start) = self.acp_start.as_mut() else {
-            return;
-        };
-        let mut open = true;
-        let mut go = false;
-        egui::Window::new(t(lang, "ACP Agent", "ACP Agent"))
-            .collapsible(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                if agents.is_empty() {
-                    ui.label(t(
-                        lang,
-                        "No [acp] agents configured; type a command.",
-                        "未配置 [acp] agent;请输入命令。",
-                    ));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut start.command)
-                            .hint_text("codex acp")
-                            .desired_width(260.0),
-                    );
-                } else {
-                    egui::ComboBox::from_id_salt(("acp-agent",))
-                        .selected_text(
-                            agents
-                                .get(start.index)
-                                .map(|a| a.name.as_str())
-                                .unwrap_or(""),
-                        )
-                        .width(260.0)
-                        .show_ui(ui, |ui| {
-                            for (i, a) in agents.iter().enumerate() {
-                                ui.selectable_value(
-                                    &mut start.index,
-                                    i,
-                                    format!("{} ({})", a.name, a.command.join(" ")),
-                                );
-                            }
-                        });
-                }
-                ui.add(
-                    egui::TextEdit::singleline(&mut start.session_id)
-                        .hint_text(t(
-                            lang,
-                            "Session ID to resume (optional)",
-                            "要恢复的会话 ID(可选)",
-                        ))
-                        .desired_width(260.0),
-                );
-                if let Some(err) = &start.error {
-                    ui.colored_label(chrome_rgb(self.theme.chrome().negative), err);
-                }
-                if ui.button(t(lang, "Start", "启动")).clicked() {
-                    go = true;
-                }
-            });
-        if go {
-            let agent = if agents.is_empty() {
-                let command: Vec<String> = start
-                    .command
-                    .split_whitespace()
-                    .map(str::to_string)
-                    .collect();
-                if command.is_empty() {
-                    start.error = Some(t(lang, "Enter a command.", "请输入命令。").into());
-                    return;
-                }
-                mtty_config::AcpAgent {
-                    name: command[0].clone(),
-                    command,
-                    ..Default::default()
-                }
-            } else {
-                agents[start.index.min(agents.len() - 1)].clone()
-            };
-            self.start_acp(agent);
-        } else if !open {
-            self.acp_start = None;
-        }
+        self.draw_acp_launcher(ctx);
     }
 
     /// The ACP transcript window and its prompt (ADR 0040, A2).
@@ -14087,19 +14143,32 @@ impl State {
             return;
         };
         let mut open = true;
-        let (mut send, mut stop, mut close, mut authenticate) = (false, false, false, false);
+        let (mut send, mut stop, mut close, mut authenticate, mut restart) =
+            (false, false, false, false, false);
+        let mut setting_change = None;
         egui::Window::new(t(lang, "ACP Agent", "ACP Agent"))
             .collapsible(false)
             .open(&mut open)
-            .default_size([600.0, 420.0])
+            .default_size([720.0, 640.0])
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(&acp.status).size(11.0));
-                    if ui.small_button(t(lang, "Stop", "停止")).clicked() {
+                    if ui
+                        .add_enabled(acp.connected, egui::Button::new(t(lang, "Stop", "停止")))
+                        .clicked()
+                    {
                         stop = true;
                     }
                     if ui.small_button(t(lang, "Close", "关闭")).clicked() {
                         close = true;
+                    }
+                    let label = if acp.load_supported {
+                        t(lang, "Reconnect session", "重连会话")
+                    } else {
+                        t(lang, "Restart · new session", "重启 · 新会话")
+                    };
+                    if ui.small_button(label).clicked() {
+                        restart = true;
                     }
                 });
                 if !acp.auth_methods.is_empty() {
@@ -14121,7 +14190,10 @@ impl State {
                             });
                         if ui
                             .add_enabled(
-                                acp.auth_method.is_some(),
+                                acp.connected
+                                    && acp.auth_method.is_some()
+                                    && acp.prompt_id.is_none()
+                                    && acp.settings_pending.is_none(),
                                 egui::Button::new(t(lang, "Authenticate", "认证")),
                             )
                             .clicked()
@@ -14130,8 +14202,9 @@ impl State {
                         }
                     });
                 }
+                setting_change = acp_browser::session_details(ui, ctx, lang, acp);
                 egui::ScrollArea::vertical()
-                    .max_height(320.0)
+                    .max_height(260.0)
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
                         ui.add(egui::Label::new(
@@ -14149,10 +14222,23 @@ impl State {
                         .desired_width(f32::INFINITY),
                 );
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if enter || ui.button(t(lang, "Send", "发送")).clicked() {
+                let ready = acp.connected
+                    && acp.session.is_some()
+                    && acp.prompt_id.is_none()
+                    && acp.settings_pending.is_none();
+                if (enter && ready)
+                    || ui
+                        .add_enabled(ready, egui::Button::new(t(lang, "Send", "发送")))
+                        .clicked()
+                {
                     send = true;
                 }
             });
+        if let Some((setting, value)) = setting_change {
+            if let Some(session) = &acp.session {
+                acp.settings_pending = Some(acp.client.set_setting(session, &setting, &value));
+            }
+        }
         if authenticate {
             if let Some(method) = &acp.auth_method {
                 acp.authenticate_id = Some(acp.client.authenticate(method));
@@ -14162,7 +14248,7 @@ impl State {
         if send && !acp.prompt.trim().is_empty() {
             if let Some(session) = acp.session.clone() {
                 let text = std::mem::take(&mut acp.prompt);
-                acp.client.prompt(&session, &text);
+                acp.prompt_id = Some(acp.client.prompt(&session, &text));
                 acp.transcript.push_str(&format!("\n\u{203a} {text}\n\n"));
                 acp.status = "working".into();
                 self.window.request_redraw();
@@ -14174,7 +14260,37 @@ impl State {
             }
             if let Some(session) = acp.session.clone() {
                 acp.client.cancel(&session);
+                acp.status = if acp.prompt_id.is_some() {
+                    "cancelling"
+                } else {
+                    "ready"
+                }
+                .into();
+            } else {
+                acp.connected = false;
+                acp.status = "stopped".into();
+                let _ = acp.client.shutdown();
             }
+        }
+        if restart {
+            let mut profile = acp.profile.clone();
+            profile.auth_method = acp.auth_method.clone();
+            profile.session_id = if acp.load_supported {
+                acp.session.clone().or_else(|| acp.resume_id.clone())
+            } else {
+                None
+            };
+            let directory = acp.cwd.clone();
+            let session_id = profile.session_id.clone().unwrap_or_default();
+            let command = serde_json::to_string(&profile.command).unwrap_or_default();
+            self.open_acp_launcher();
+            if let Some(start) = &mut self.acp_start {
+                start.directory = directory;
+                start.session_id = session_id;
+                start.command = command;
+            }
+            self.start_acp(profile);
+            return;
         }
         if close || !open {
             self.acp_writes.clear();
@@ -14832,6 +14948,90 @@ impl State {
                     }
                 }
             }
+            JobDone::AcpEnvelope { epoch, message } => {
+                let valid = self.acp.as_ref().is_some_and(|acp| {
+                    acp.epoch == epoch
+                        && (acp.connected
+                            || matches!(&*message, JobDone::AcpLog(_) | JobDone::AcpClosed(_)))
+                });
+                if valid {
+                    self.finish_job(*message);
+                }
+            }
+            JobDone::AcpInventory(inventory) => {
+                if let Some(start) = &mut self.acp_start {
+                    let selected = start
+                        .inventory
+                        .get(start.index)
+                        .map(|entry| entry.agent.command.clone());
+                    start.index = selected
+                        .and_then(|command| {
+                            inventory
+                                .iter()
+                                .position(|entry| entry.agent.command == command)
+                        })
+                        .unwrap_or(0);
+                    start.inventory = inventory;
+                    start.scanned = true;
+                    if start.session_id.is_empty() {
+                        start.session_id = start
+                            .inventory
+                            .get(start.index)
+                            .and_then(|entry| entry.agent.session_id.clone())
+                            .unwrap_or_default();
+                    }
+                }
+            }
+            JobDone::AcpLog(message) => {
+                if let Some(acp) = &mut self.acp {
+                    mtty_ui::acp_adapters::append_bounded(&mut acp.log, &message, 64 * 1024);
+                }
+            }
+            JobDone::AcpClosed(message) => {
+                if let Some(acp) = &mut self.acp {
+                    if acp.connected {
+                        acp.connected = false;
+                        acp.status = "disconnected".into();
+                        acp.prompt_id = None;
+                        acp.settings_pending = None;
+                        if let Some(status) = acp.client.shutdown() {
+                            mtty_ui::acp_adapters::append_bounded(
+                                &mut acp.log,
+                                &format!("\n[process] {status}\n"),
+                                64 * 1024,
+                            );
+                        }
+                    }
+                    mtty_ui::acp_adapters::append_bounded(
+                        &mut acp.log,
+                        &format!("\n[transport] {message}\n"),
+                        64 * 1024,
+                    );
+                }
+                for (_, (_, reply)) in self.acp_writes.drain() {
+                    let _ = reply.send(false);
+                }
+                if let Some((_, reply)) = self.acp_permission.take() {
+                    let _ = reply.send(false);
+                }
+            }
+            JobDone::AcpSettings(update) => {
+                if let Some(acp) = &mut self.acp {
+                    if update.get("configOptions").is_some() {
+                        acp.settings = mtty_acp::session_settings(&update);
+                    } else if let Some(mode) =
+                        update.get("currentModeId").and_then(|value| value.as_str())
+                    {
+                        for setting in acp
+                            .settings
+                            .iter_mut()
+                            .filter(|setting| setting.kind == mtty_acp::SettingKind::Mode)
+                        {
+                            setting.current = mode.to_owned();
+                        }
+                    }
+                }
+            }
             JobDone::DirListed { dir, entries } => self.tree_listed(dir, entries),
             JobDone::SftpListed { dir, result } => {
                 if let Some(view) = self.sftp_view.as_mut() {
@@ -15192,7 +15392,11 @@ impl State {
             },
             JobDone::AcpUpdate(text) => {
                 if let Some(acp) = self.acp.as_mut() {
-                    acp.transcript.push_str(&text);
+                    mtty_ui::acp_adapters::append_bounded(
+                        &mut acp.transcript,
+                        &text,
+                        2 * 1024 * 1024,
+                    );
                 }
                 self.window.request_redraw();
             }
@@ -16072,6 +16276,7 @@ impl ApplicationHandler<HostEvent> for Host {
             transport_dialog: None,
             key_import: None,
             acp: None,
+            acp_epoch: 0,
             acp_writes: HashMap::new(),
             acp_start: None,
             acp_permission: None,
@@ -16207,6 +16412,19 @@ impl ApplicationHandler<HostEvent> for Host {
             hover: None,
             completion: None,
             qa_done: false,
+            qa_script: mtty_config::env("QA_COMMANDS")
+                .map(|script| {
+                    script
+                        .split(';')
+                        .filter_map(|entry| {
+                            let (seconds, label) = entry.split_once(':')?;
+                            let seconds =
+                                Duration::try_from_secs_f64(seconds.trim().parse().ok()?).ok()?;
+                            Some((seconds, label.trim().to_owned()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             bg_search: None,
             large_edit_offer: None,
             large_loading: None,
@@ -16558,6 +16776,25 @@ impl ApplicationHandler<HostEvent> for Host {
                     state.redraw.request();
                 } else {
                     wake_at = wake_at.min(due);
+                }
+            }
+            if !state.qa_script.is_empty() {
+                let start = state.start;
+                let now = Instant::now();
+                let mut ready = Vec::new();
+                state.qa_script.retain(|(after, label)| {
+                    let at = start + *after;
+                    if now >= at {
+                        ready.push(label.clone());
+                        false
+                    } else {
+                        wake_at = wake_at.min(at);
+                        true
+                    }
+                });
+                for label in ready {
+                    state.qa_palette_command(&label);
+                    state.window.request_redraw();
                 }
             }
             if let Some(secs) = mtty_config::env("QA_AFTER").and_then(|v| v.parse::<f64>().ok()) {
