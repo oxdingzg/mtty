@@ -44,6 +44,7 @@ mod command_history;
 mod drag;
 mod editor_pane;
 mod live_markdown;
+mod lsp_remote;
 #[cfg(target_os = "macos")]
 mod macos_url;
 mod project_workspace;
@@ -1137,6 +1138,25 @@ struct Editor {
 /// Work finished on a background thread. Network and process work never runs
 /// on the UI thread; the result comes back through `State::jobs_rx`.
 enum JobDone {
+    RemoteLspResolved {
+        epoch: u64,
+        id: String,
+        dest: String,
+        path: String,
+        result: Result<mtty_ui::ssh::RemoteLspContext, String>,
+    },
+    LspSettingsLoaded {
+        epoch: u64,
+        result: Result<mtty_config::LspConfig, String>,
+    },
+    RemoteDefinitionRead {
+        epoch: u64,
+        dest: String,
+        path: String,
+        range: mtty_lsp::LspRange,
+        encoding: mtty_lsp::Encoding,
+        result: std::io::Result<Vec<u8>>,
+    },
     /// Bytes read over ssh. `id` is `Some` when the pane already exists
     /// (session restore); `None` opens a new editor pane (remote dialog).
     RemoteRead {
@@ -2085,6 +2105,7 @@ struct State {
     vim_command: Option<String>,
     /// Language servers for editor panes (ADR 0034, E5).
     lsp: mtty_lsp::Lsp,
+    lsp_generation: u64,
     /// `MTTY_QA_COMMAND` has run.
     qa_done: bool,
     /// The pointer resting on editor text, until a hover is asked for.
@@ -5376,6 +5397,23 @@ impl State {
                         mtty_ui::i18n::t(self.lang, "Remote path", "远程路径").into(),
                         remote.path.clone(),
                     ));
+                    let status = ed.remote_lsp.error.clone().unwrap_or_else(|| {
+                        if ed.remote_lsp.pending {
+                            "Resolving remote path".into()
+                        } else if self.lsp.ready(&ed.lsp_key()) {
+                            "Remote server ready".into()
+                        } else if self.lsp.handles(&ed.lsp_key()) {
+                            "Remote server starting".into()
+                        } else if self.lsp.remote_configured(&remote.dest) {
+                            "Not active for this language".into()
+                        } else {
+                            "Not configured".into()
+                        }
+                    });
+                    rows.push((
+                        mtty_ui::i18n::t(self.lang, "Language server", "语言服务器").into(),
+                        status,
+                    ));
                 }
                 let lines = ed.total_lines().to_string();
                 match &ed.large {
@@ -5495,6 +5533,7 @@ enum Cmd {
     AttentionInbox,
     NextAttention,
     CommandHistory,
+    RestartLanguageServers,
     /// The active pane's last command output (OSC 133, B2.3).
     CopyLastOutput,
     SendLastOutput,
@@ -5641,6 +5680,10 @@ impl State {
                 ),
             ),
             (Cmd::AttentionInbox, t(l, "Attention Inbox…", "待处理事项…")),
+            (
+                Cmd::RestartLanguageServers,
+                t(l, "Restart Language Servers", "重启语言服务器"),
+            ),
             (
                 Cmd::CommandHistory,
                 t(l, "Command Output History…", "命令输出历史…"),
@@ -6115,6 +6158,7 @@ impl State {
                     .and_then(|(_, found)| found.iter().position(|f| *f));
                 self.task_dialog = Some((String::new(), first));
             }
+            Cmd::RestartLanguageServers => self.restart_language_servers(),
             Cmd::CommandHistory => {
                 if let Some(pane) = self.active_pane_id() {
                     self.command_history = Some(command_history::View::new(pane));
@@ -8805,16 +8849,30 @@ impl State {
     /// goes to its server when it changed, closed panes close their
     /// documents, and answers are handled.
     fn lsp_frame(&mut self) {
+        self.resolve_remote_lsp_documents();
         let mut open = std::collections::HashSet::new();
-        for tab in &self.tabs {
-            for ed in tab
-                .editors
-                .iter()
-                .filter(|e| !e.is_view_only() && e.remote.is_none())
-            {
-                open.insert(ed.path.clone());
+        for ed in self
+            .tabs
+            .iter()
+            .flat_map(|tab| &tab.editors)
+            .filter(|editor| !editor.is_view_only())
+        {
+            let key = ed.lsp_key();
+            open.insert(key.clone());
+            if ed.remote.is_some() {
+                if let (Some(path), Some(root)) = (&ed.remote_lsp.path, &ed.remote_lsp.root) {
+                    self.lsp.sync_remote(
+                        &key,
+                        std::path::Path::new(path),
+                        std::path::Path::new(root),
+                        ed.language(),
+                        ed.doc.rope(),
+                        ed.doc.revision(),
+                    );
+                }
+            } else {
                 self.lsp
-                    .sync(&ed.path, ed.language(), ed.doc.rope(), ed.doc.revision());
+                    .sync(&key, ed.language(), ed.doc.rope(), ed.doc.revision());
             }
         }
         self.lsp.retain(&open);
@@ -8825,14 +8883,32 @@ impl State {
 
     /// Send the active editor's latest text before asking about it.
     fn lsp_sync_active(&mut self) {
-        let Some(tab) = self.tabs.get(self.active_tab) else {
+        self.resolve_remote_lsp_documents();
+        let Some(ed) = self.active_editor() else {
             return;
         };
-        if let Some(ed) = tab.editors.iter().find(|e| e.id == tab.active) {
-            if !ed.is_view_only() && ed.remote.is_none() {
-                self.lsp
-                    .sync(&ed.path, ed.language(), ed.doc.rope(), ed.doc.revision());
-            }
+        if ed.is_view_only() {
+            return;
+        }
+        let key = ed.lsp_key();
+        let language = ed.language().map(str::to_owned);
+        let rope = ed.doc.rope().clone();
+        let revision = ed.doc.revision();
+        let remote = ed
+            .remote
+            .as_ref()
+            .and_then(|_| Some((ed.remote_lsp.path.clone()?, ed.remote_lsp.root.clone()?)));
+        if let Some((path, root)) = remote {
+            self.lsp.sync_remote(
+                &key,
+                std::path::Path::new(&path),
+                std::path::Path::new(&root),
+                language.as_deref(),
+                &rope,
+                revision,
+            );
+        } else if mtty_lsp::remote::split_key(&key).is_none() {
+            self.lsp.sync(&key, language.as_deref(), &rope, revision);
         }
     }
 
@@ -8846,7 +8922,7 @@ impl State {
                     .tabs
                     .iter_mut()
                     .flat_map(|t| t.editors.iter_mut())
-                    .filter(|e| e.path == path && e.remote.is_none())
+                    .filter(|e| e.lsp_key() == path)
                 {
                     let rope = ed.doc.rope();
                     let mut diagnostics: Vec<editor_pane::PaneDiagnostic> = list
@@ -8877,13 +8953,21 @@ impl State {
                 }
             }
             Event::Completion {
+                path,
                 ticket,
                 items,
                 incomplete,
                 encoding,
                 ..
             } => {
-                if let Some(c) = self.completion.as_mut().filter(|c| c.ticket == ticket) {
+                let tabs = &self.tabs;
+                if let Some(c) = self.completion.as_mut().filter(|c| {
+                    c.ticket == ticket
+                        && tabs
+                            .iter()
+                            .flat_map(|tab| &tab.editors)
+                            .any(|ed| ed.id == c.pane && ed.lsp_key() == path)
+                }) {
                     c.items = items;
                     c.incomplete = incomplete;
                     c.encoding = encoding;
@@ -8892,17 +8976,51 @@ impl State {
                 }
                 self.refilter_completion();
             }
-            Event::Definition { targets, encoding } => match targets.into_iter().next() {
-                Some((path, range)) => self.go_to_target(&path, range, encoding),
-                None => self.show_notice(
-                    mtty_ui::i18n::t(self.lang, "No definition found.", "未找到定义。").to_string(),
-                ),
-            },
+            Event::Definition {
+                source,
+                at,
+                revision,
+                targets,
+                encoding,
+            } => {
+                if !self.active_editor().is_some_and(|ed| {
+                    ed.lsp_key() == source
+                        && ed.doc.revision() == revision
+                        && ed.doc.selection().primary().head == at
+                }) {
+                    return;
+                }
+                match targets.into_iter().next() {
+                    Some((path, range)) => self.go_to_target(&path, range, encoding),
+                    None => self.show_notice(
+                        mtty_ui::i18n::t(self.lang, "No definition found.", "未找到定义。")
+                            .to_string(),
+                    ),
+                }
+            }
             Event::Failed {
                 server,
                 message,
                 configured,
+                paths,
             } => {
+                for ed in self
+                    .tabs
+                    .iter_mut()
+                    .flat_map(|tab| &mut tab.editors)
+                    .filter(|ed| ed.remote.is_some() && paths.contains(&ed.lsp_key()))
+                {
+                    ed.remote_lsp.error = Some(message.clone());
+                }
+                let completion_failed = self.completion.as_ref().is_some_and(|popup| {
+                    self.tabs
+                        .iter()
+                        .flat_map(|tab| &tab.editors)
+                        .any(|ed| ed.id == popup.pane && paths.contains(&ed.lsp_key()))
+                });
+                if completion_failed {
+                    self.completion = None;
+                }
                 // A default server that is not installed stays quiet; one
                 // the user configured says why it is not working.
                 eprintln!("mtty: language server {server}: {message}");
@@ -8924,6 +9042,10 @@ impl State {
         range: mtty_lsp::LspRange,
         encoding: mtty_lsp::Encoding,
     ) {
+        if let Some((dest, path)) = mtty_lsp::remote::split_key(path) {
+            self.open_remote_definition(dest, path, range, encoding);
+            return;
+        }
         if !self.open_editor_pane(path) {
             return;
         }
@@ -8945,11 +9067,7 @@ impl State {
         let Some(ed) = active_editor_of(&self.tabs, self.active_tab) else {
             return;
         };
-        // No language server for a remote file.
-        if ed.remote.is_some() {
-            return;
-        }
-        let (path, at) = (ed.path.clone(), ed.doc.selection().primary().head);
+        let (path, at) = (ed.lsp_key(), ed.doc.selection().primary().head);
         let asked = self.lsp.definition(&path, ed.doc.rope(), at);
         if !asked {
             self.show_notice(no_server_notice(lang));
@@ -8964,17 +9082,10 @@ impl State {
         let Some(ed) = active_editor_of(&self.tabs, self.active_tab) else {
             return;
         };
-        // No language server for a remote file.
-        if ed.remote.is_some() {
-            if invoked {
-                self.show_notice(no_server_notice(lang));
-            }
-            return;
-        }
         let rope = ed.doc.rope();
         let caret = ed.doc.selection().primary().head;
         let start = word_start(rope, caret);
-        let (pane, path) = (ed.id.clone(), ed.path.clone());
+        let (pane, path) = (ed.id.clone(), ed.lsp_key());
         match self.lsp.completion(&path, rope, caret, trigger.as_deref()) {
             Some(ticket) => {
                 // Keep showing the last list while a newer one is asked for.
@@ -9013,7 +9124,7 @@ impl State {
         let Some(ed) = self.active_editor() else {
             return;
         };
-        if ed.is_view_only() || ed.remote.is_some() || !self.lsp.handles(&ed.path) {
+        if ed.is_view_only() || !self.lsp.handles(&ed.lsp_key()) {
             return;
         }
         let rope = ed.doc.rope();
@@ -9022,7 +9133,7 @@ impl State {
         let pane = ed.id.clone();
         let trigger = self
             .lsp
-            .trigger_characters(&ed.path)
+            .trigger_characters(&ed.lsp_key())
             .into_iter()
             .filter(|t| !t.is_empty() && text.ends_with(t.chars().last().unwrap_or(' ')))
             .find(|t| before.ends_with(t.as_str()));
@@ -9166,9 +9277,8 @@ impl State {
             .into_iter()
             .map(|d| (d.severity, d.message.clone()))
             .collect();
-        let path = ed.path.clone();
-        let asked =
-            !ed.is_view_only() && ed.remote.is_none() && self.lsp.hover(&path, ed.doc.rope(), at);
+        let path = ed.lsp_key();
+        let asked = !ed.is_view_only() && self.lsp.hover(&path, ed.doc.rope(), at);
         if diagnostics.is_empty() && !asked {
             return;
         }
@@ -14802,6 +14912,95 @@ impl State {
     fn finish_job(&mut self, done: JobDone) {
         use mtty_ui::i18n::t;
         match done {
+            JobDone::RemoteLspResolved {
+                epoch,
+                id,
+                dest,
+                path,
+                result,
+            } => {
+                if epoch != self.lsp_generation {
+                    return;
+                }
+                let duplicate = result.as_ref().ok().is_some_and(|resolved| {
+                    self.tabs.iter().flat_map(|tab| &tab.editors).any(|ed| {
+                        ed.id != id
+                            && ed.remote.as_ref().is_some_and(|remote| remote.dest == dest)
+                            && ed.remote_lsp.path.as_deref() == Some(resolved.path.as_str())
+                    })
+                });
+                if let Some(editor) =
+                    self.tabs
+                        .iter_mut()
+                        .flat_map(|tab| &mut tab.editors)
+                        .find(|ed| {
+                            ed.id == id
+                                && ed.remote.as_ref().is_some_and(|remote| {
+                                    remote.dest == dest && remote.path == path
+                                })
+                        })
+                {
+                    editor.remote_lsp.pending = false;
+                    match result {
+                        Ok(resolved) if !duplicate => {
+                            editor.remote_lsp.path = Some(resolved.path);
+                            editor.remote_lsp.root = Some(resolved.root);
+                            editor.remote_lsp.error = None;
+                        }
+                        Ok(_) => editor.remote_lsp.error = Some(
+                            "this remote file already has a language-server buffer in another pane"
+                                .into(),
+                        ),
+                        Err(error) => {
+                            editor.remote_lsp.error = Some(error.clone());
+                            self.show_notice(error);
+                        }
+                    }
+                }
+            }
+            JobDone::LspSettingsLoaded { epoch, result } => {
+                if epoch != self.lsp_generation {
+                    return;
+                }
+                match result {
+                    Ok(config) => self.install_lsp_settings(config),
+                    Err(error) => {
+                        for ed in self.tabs.iter_mut().flat_map(|tab| &mut tab.editors) {
+                            ed.remote_lsp.pending = false;
+                        }
+                        self.show_notice(error);
+                    }
+                }
+            }
+            JobDone::RemoteDefinitionRead {
+                epoch,
+                dest,
+                path,
+                range,
+                encoding,
+                result,
+            } => {
+                if epoch != self.lsp_generation {
+                    return;
+                }
+                match result {
+                    Ok(bytes) => {
+                        let existing = self.tabs.iter().flat_map(|tab| &tab.editors).any(|ed| {
+                            ed.remote.as_ref().is_some_and(|remote| {
+                                remote.dest == dest
+                                    && (remote.path == path
+                                        || ed.remote_lsp.path.as_deref() == Some(path.as_str()))
+                            })
+                        });
+                        if existing {
+                            self.open_remote_definition(dest, path, range, encoding);
+                        } else if self.open_remote_editor_pane(dest, path, &bytes) {
+                            self.position_lsp_target(range, encoding);
+                        }
+                    }
+                    Err(error) => self.show_notice(format!("{dest}:{path}: {error}")),
+                }
+            }
             JobDone::DirListed { dir, entries } => self.tree_listed(dir, entries),
             JobDone::SftpListed { dir, result } => {
                 if let Some(view) = self.sftp_view.as_mut() {
@@ -15070,7 +15269,19 @@ impl State {
                     self.read_remote_conflict(id.clone(), dest.clone(), path.clone());
                 }
                 if let Some(id) = id {
+                    let key = if result.is_ok() {
+                        self.tabs
+                            .iter()
+                            .flat_map(|tab| &tab.editors)
+                            .find(|ed| ed.id == id)
+                            .map(|ed| ed.lsp_key())
+                    } else {
+                        None
+                    };
                     self.finish_pane_remote_write(&id, dest, path, &text, result);
+                    if let Some(key) = key {
+                        self.lsp.saved(&key);
+                    }
                 } else {
                     let target = Some((dest.clone(), path.clone()));
                     let Some(ed) = self.editor.as_mut().filter(|ed| ed.remote == target) else {
@@ -16146,24 +16357,7 @@ impl ApplicationHandler<HostEvent> for Host {
             vim_command: None,
             lsp: {
                 let proxy = self.proxy.clone();
-                let settings = mtty_lsp::Settings {
-                    disabled: cfg.lsp.disabled,
-                    servers: cfg
-                        .lsp
-                        .servers
-                        .iter()
-                        .map(|(k, v)| {
-                            (
-                                k.clone(),
-                                mtty_lsp::ServerSettings {
-                                    command: v.command.clone(),
-                                    root_markers: v.root_markers.clone(),
-                                    disabled: v.disabled,
-                                },
-                            )
-                        })
-                        .collect(),
-                };
+                let settings = lsp_remote::settings(&cfg.lsp);
                 mtty_lsp::Lsp::new(
                     settings,
                     Arc::new(move || {
@@ -16171,6 +16365,7 @@ impl ApplicationHandler<HostEvent> for Host {
                     }),
                 )
             },
+            lsp_generation: 0,
             hover_rest: None,
             hover: None,
             completion: None,

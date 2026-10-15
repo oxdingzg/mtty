@@ -43,8 +43,8 @@ impl Pos {
 
     pub fn from_json(v: &Value) -> Option<Pos> {
         Some(Pos {
-            line: v.get("line")?.as_u64()? as u32,
-            character: v.get("character")?.as_u64()? as u32,
+            line: u32::try_from(v.get("line")?.as_u64()?).ok()?,
+            character: u32::try_from(v.get("character")?.as_u64()?).ok()?,
         })
     }
 }
