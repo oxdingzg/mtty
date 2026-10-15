@@ -13,7 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 
 use serde_json::{json, Value};
+mod settings;
 mod terminal;
+pub use settings::{session_settings, Setting, SettingKind};
 use terminal::Terminals;
 
 /// What the client does when the agent talks to it.
@@ -29,6 +31,14 @@ pub trait Handler: Send + Sync + 'static {
     /// The transport failed or the agent sent unparsable data.
     fn on_error(&self, message: &str) {
         let _ = message;
+    }
+    /// Bounded adapter stderr, separate from protocol messages.
+    fn on_log(&self, message: &str) {
+        let _ = message;
+    }
+    /// The transport cannot accept further requests.
+    fn on_closed(&self, message: &str) {
+        self.on_error(message);
     }
     /// Live output from a client-managed command. Clients may keep this
     /// output for tool-call terminal references even after terminal release.
@@ -79,7 +89,7 @@ impl Client {
         cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
@@ -89,6 +99,10 @@ impl Client {
         let mut child = cmd.spawn()?;
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
+        if let Some(stderr) = child.stderr.take() {
+            let logs = handler.clone();
+            std::thread::spawn(move || read_stderr(stderr, logs));
+        }
         let mut client = Client::over(stdout, stdin, handler);
         client.child = Some(child);
         Ok(client)
@@ -110,7 +124,7 @@ impl Client {
                     .and_then(|_| writer.write_all(b"\n"))
                     .and_then(|_| writer.flush())
                 {
-                    writer_handler.on_error(&format!("write failed: {error}"));
+                    writer_handler.on_closed(&format!("write failed: {error}"));
                     break;
                 }
             }
@@ -198,6 +212,41 @@ impl Client {
         self.notify("session/cancel", json!({ "sessionId": session }));
     }
 
+    /// Change only a selector actually advertised by the agent.
+    pub fn set_setting(&self, session: &str, setting: &Setting, value: &str) -> u64 {
+        match setting.kind {
+            SettingKind::Config => self.request(
+                "session/set_config_option",
+                json!({"sessionId":session,"configId":setting.id,"value":value}),
+            ),
+            SettingKind::Mode => self.request(
+                "session/set_mode",
+                json!({"sessionId":session,"modeId":value}),
+            ),
+        }
+    }
+
+    pub fn shutdown(&mut self) -> Option<std::process::ExitStatus> {
+        self.terminals.shutdown();
+        if let Some(mut child) = self.child.take() {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+            }
+            #[cfg(windows)]
+            if child.try_wait().ok().flatten().is_none() {
+                let _ = mtty_platform::background_command("taskkill")
+                    .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+            }
+            let _ = child.kill();
+            return child.wait().ok();
+        }
+        None
+    }
+
     pub fn handler(&self) -> &Arc<dyn Handler> {
         &self.handler
     }
@@ -210,23 +259,67 @@ impl Client {
 
 impl Drop for Client {
     fn drop(&mut self) {
-        self.terminals.shutdown();
-        if let Some(child) = &mut self.child {
-            #[cfg(unix)]
-            unsafe {
-                // ACP adapters may launch a provider CLI or SDK subprocess.
-                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+        let _ = self.shutdown();
+    }
+}
+
+fn read_stderr(mut reader: impl Read, handler: Arc<dyn Handler>) {
+    fn flush(buffer: &mut Vec<u8>, handler: &dyn Handler) {
+        loop {
+            match std::str::from_utf8(buffer) {
+                Ok(text) => {
+                    if !text.is_empty() {
+                        handler.on_log(text);
+                    }
+                    buffer.clear();
+                    break;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    if valid > 0 {
+                        handler.on_log(std::str::from_utf8(&buffer[..valid]).unwrap());
+                        buffer.drain(..valid);
+                        continue;
+                    }
+                    if let Some(length) = error.error_len() {
+                        handler.on_log("\u{fffd}");
+                        buffer.drain(..length);
+                    } else {
+                        break;
+                    }
+                }
             }
-            #[cfg(windows)]
-            if child.try_wait().ok().flatten().is_none() {
-                let _ = mtty_platform::background_command("taskkill")
-                    .args(["/PID", &child.id().to_string(), "/T", "/F"])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+        }
+    }
+    let mut bytes = [0; 4096];
+    let mut pending = Vec::new();
+    let mut remaining = 64 * 1024;
+    let mut truncated = false;
+    loop {
+        match reader.read(&mut bytes) {
+            Ok(0) => {
+                flush(&mut pending, handler.as_ref());
+                if !pending.is_empty() {
+                    handler.on_log(&String::from_utf8_lossy(&pending));
+                }
+                break;
             }
-            let _ = child.kill();
-            let _ = child.wait();
+            Ok(count) => {
+                let take = count.min(remaining);
+                pending.extend_from_slice(&bytes[..take]);
+                remaining -= take;
+                flush(&mut pending, handler.as_ref());
+                if take < count && !truncated {
+                    handler.on_log("\n[stderr capture truncated after 64 KiB]\n");
+                    pending.clear();
+                    truncated = true;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                handler.on_log(&format!("\n[stderr read failed: {error}]\n"));
+                break;
+            }
         }
     }
 }
@@ -266,6 +359,7 @@ fn reader_loop(
                         Err(_) => handler.on_error("invalid UTF-8 from the agent"),
                     }
                 }
+                handler.on_closed("agent closed its stdout");
                 break;
             }
             Ok(n) => {
@@ -282,7 +376,7 @@ fn reader_loop(
                 }
             }
             Err(e) => {
-                handler.on_error(&format!("read failed: {e}"));
+                handler.on_closed(&format!("read failed: {e}"));
                 break;
             }
         }
@@ -556,6 +650,69 @@ mod tests {
             got.iter().any(|m| m == "update:s1:agent_message_chunk"),
             "{got:?}"
         );
+    }
+
+    #[test]
+    fn advertised_setting_requests_and_disconnects_are_observable() {
+        struct Closed(mpsc::Sender<String>);
+        impl Handler for Closed {
+            fn on_closed(&self, message: &str) {
+                let _ = self.0.send(message.into());
+            }
+        }
+        let (transport, agent) = streams();
+        let (tx, rx) = mpsc::channel();
+        let client = Client::over(
+            transport.try_clone().unwrap(),
+            transport,
+            Arc::new(Closed(tx)),
+        );
+        let setting = Setting {
+            id: "model".into(),
+            name: "Model".into(),
+            current: "first".into(),
+            choices: vec![("next".into(), "Next".into())],
+            kind: SettingKind::Config,
+        };
+        client.set_setting("session", &setting, "next");
+        let mut reader = BufReader::new(agent);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["method"], "session/set_config_option");
+        assert_eq!(
+            request["params"],
+            json!({"sessionId":"session","configId":"model","value":"next"})
+        );
+        drop(reader);
+        assert!(rx.recv_timeout(Duration::from_secs(2)).is_ok());
+    }
+
+    #[test]
+    fn stderr_preserves_split_unicode_and_is_bounded_without_blocking_the_reader() {
+        struct OneByte(std::io::Cursor<Vec<u8>>);
+        impl Read for OneByte {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.0.read(&mut buffer[..1])
+            }
+        }
+        #[derive(Default)]
+        struct Logs(std::sync::Mutex<String>);
+        impl Handler for Logs {
+            fn on_log(&self, message: &str) {
+                self.0.lock().unwrap().push_str(message);
+            }
+        }
+        let logs = Arc::new(Logs::default());
+        read_stderr(
+            OneByte(std::io::Cursor::new("错误：你好 🐈".as_bytes().to_vec())),
+            logs.clone(),
+        );
+        assert_eq!(&*logs.0.lock().unwrap(), "错误：你好 🐈");
+        let logs = Arc::new(Logs::default());
+        read_stderr(std::io::Cursor::new(vec![b'x'; 128 * 1024]), logs.clone());
+        let text = logs.0.lock().unwrap();
+        assert!(text.len() < 65 * 1024 && text.contains("truncated"));
     }
 
     #[test]
