@@ -46,6 +46,7 @@ mod editor_pane;
 mod live_markdown;
 #[cfg(target_os = "macos")]
 mod macos_url;
+mod project_workspace;
 mod quick_content;
 mod redraw;
 mod remote_conflict;
@@ -1177,6 +1178,10 @@ enum JobDone {
         repo: std::path::PathBuf,
         result: Result<Vec<mtty_ui::tasks::Task>, String>,
     },
+    ProjectLoaded {
+        result: Result<mtty_ui::project::Source, String>,
+        start: bool,
+    },
     TaskDiff {
         name: String,
         result: Result<String, String>,
@@ -1931,6 +1936,9 @@ struct State {
     open_path: String,
     show_open: bool,
     recipe_dialog: Option<bool>,
+    project_workspace: Option<project_workspace::View>,
+    project_runs: Vec<project_workspace::Run>,
+    project_serial: u64,
     recipe_name: String,
     recipe_list: Vec<String>,
     ssh_dialog: Option<SshForm>,
@@ -4565,6 +4573,7 @@ impl State {
         self.editor_window(ctx);
         self.remote_conflict_window(ctx);
         self.recipe_dialog_window(ctx);
+        self.project_workspace_window(ctx);
         self.ssh_dialog_window(ctx);
         self.transport_dialog_window(ctx);
         self.key_import_window(ctx);
@@ -5453,6 +5462,8 @@ enum Cmd {
     OpenRemote,
     SaveRecipe,
     OpenRecipe,
+    ProjectWorkspace,
+    StartProjectWorkspace,
     OpenFile,
     Save,
     Copy,
@@ -5626,6 +5637,14 @@ impl State {
             (Cmd::OpenRemote, t(l, "Open Remote File…", "打开远端文件…")),
             (Cmd::SaveRecipe, t(l, "Save Recipe…", "保存配方…")),
             (Cmd::OpenRecipe, t(l, "Open Recipe…", "打开配方…")),
+            (
+                Cmd::ProjectWorkspace,
+                t(l, "Project Workspace…", "项目工作区…"),
+            ),
+            (
+                Cmd::StartProjectWorkspace,
+                t(l, "Start Project Workspace", "启动项目工作区"),
+            ),
             (Cmd::OpenFile, t(l, "Open File…", "打开文件…")),
             (Cmd::Save, t(l, "Save", "保存")),
             (Cmd::Copy, t(l, "Copy", "复制")),
@@ -6523,6 +6542,8 @@ impl State {
                     .unwrap_or_default();
                 self.remote_dialog = Some((dest, String::new()));
             }
+            Cmd::ProjectWorkspace => self.load_project_workspace(false),
+            Cmd::StartProjectWorkspace => self.load_project_workspace(true),
             Cmd::SaveRecipe => {
                 self.recipe_name.clear();
                 self.recipe_dialog = Some(true);
@@ -14795,6 +14816,15 @@ impl State {
                     self.show_notice(msg);
                 }
             },
+            JobDone::ProjectLoaded { result, start } => match result {
+                Ok(source) => {
+                    self.project_workspace = Some(project_workspace::View::new(source));
+                    if start {
+                        self.start_default_project_recipe();
+                    }
+                }
+                Err(error) => self.show_notice(error),
+            },
             JobDone::TasksListed { repo, result } => {
                 if let Some(view) = self.tasks_view.as_mut().filter(|v| v.repo == repo) {
                     view.loading = false;
@@ -15862,6 +15892,9 @@ impl ApplicationHandler<HostEvent> for Host {
             open_path: String::new(),
             show_open: false,
             recipe_dialog: None,
+            project_workspace: None,
+            project_runs: Vec::new(),
+            project_serial: 0,
             recipe_name: String::new(),
             recipe_list: Vec::new(),
             ssh_dialog: None,
@@ -16211,6 +16244,7 @@ impl ApplicationHandler<HostEvent> for Host {
                     pip.window.request_redraw();
                 }
             }
+            state.poll_project_runs();
             state.reap_exited();
             state.save_scrollback_periodically();
             let drawable = window_drawable(&state.window, state.occluded);
