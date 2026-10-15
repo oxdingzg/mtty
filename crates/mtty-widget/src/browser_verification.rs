@@ -154,7 +154,8 @@ impl State {
             ui.separator();ui.label(t(lang,"Automation command · ${url} ${screenshot} ${project}","自动化命令 · ${url} ${screenshot} ${project}"));
             ui.add(egui::TextEdit::multiline(&mut view.command).desired_rows(2).font(egui::TextStyle::Monospace).hint_text("playwright screenshot ${url} ${screenshot}"));
             ui.add(egui::TextEdit::multiline(&mut view.notes).desired_rows(2).hint_text(t(lang,"Verification notes","验证备注")));
-            ui.horizontal(|ui|{if ui.add_enabled(!self.read_only&&!view.loading&&!view.command.trim().is_empty(),egui::Button::new(t(lang,"Run automation + capture evidence","运行自动化并收集证据"))).clicked(){run=true;}if view.loading{ui.spinner();}});
+            ui.horizontal(|ui|{if ui.add_enabled(!self.read_only&&!view.loading&&!view.command.trim().is_empty(),egui::Button::new(t(lang,"Run automation + capture evidence","运行自动化并收集证据"))).clicked(){run=true;}
+                if view.loading{ui.spinner();}});
             if let Some(error)=&view.error{ui.colored_label(chrome_rgb(self.theme.chrome().negative),error);}
             ui.small(t(lang,"Each run gets a fresh PNG path in task Git metadata or application evidence storage.","每次运行在任务 Git 元数据或应用证据目录中分配新的 PNG 路径。"));
             egui::ScrollArea::vertical().max_height(300.0).show(ui,|ui|{
