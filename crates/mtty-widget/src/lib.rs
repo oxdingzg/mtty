@@ -39,6 +39,7 @@ enum HostEvent {
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
+mod attention;
 mod drag;
 mod editor_pane;
 mod live_markdown;
@@ -1939,6 +1940,8 @@ struct State {
     task_dialog: Option<(String, Option<usize>)>,
     /// The Agent Tasks window.
     tasks_view: Option<TasksView>,
+    attention_inbox: mtty_ui::attention::Inbox,
+    attention_open: bool,
     /// Saved SSH hosts (B3.1). `host_book_error` blocks saving over a
     /// hosts.toml that could not be read.
     host_book: mtty_config::hosts::HostBook,
@@ -4523,6 +4526,7 @@ impl State {
         self.acp_window(ctx);
         self.task_dialog_window(ctx);
         self.tasks_window(ctx);
+        self.attention_window(ctx);
         self.hosts_window(ctx);
         self.sftp_window(ctx);
         self.snippets_window(ctx);
@@ -5376,6 +5380,8 @@ enum Cmd {
     /// Agent tasks in git worktrees (B2.4).
     NewTask,
     Tasks,
+    AttentionInbox,
+    NextAttention,
     /// The active pane's last command output (OSC 133, B2.3).
     CopyLastOutput,
     SendLastOutput,
@@ -5507,6 +5513,11 @@ impl State {
             ),
             (Cmd::NewTask, t(l, "New Agent Task…", "新建 Agent 任务…")),
             (Cmd::Tasks, t(l, "Agent Tasks…", "Agent 任务…")),
+            (Cmd::AttentionInbox, t(l, "Attention Inbox…", "待处理事项…")),
+            (
+                Cmd::NextAttention,
+                t(l, "Next Pending Task", "下一个待处理任务"),
+            ),
             (
                 Cmd::CopyLastOutput,
                 t(l, "Copy Last Command Output", "复制上一条命令的输出"),
@@ -5964,6 +5975,21 @@ impl State {
                     .as_ref()
                     .and_then(|(_, found)| found.iter().position(|f| *f));
                 self.task_dialog = Some((String::new(), first));
+            }
+            Cmd::AttentionInbox => self.attention_open = true,
+            Cmd::NextAttention => {
+                let current = self.active_pane_id();
+                let next = self
+                    .attention_inbox
+                    .next(current.as_deref())
+                    .map(str::to_owned);
+                if let Some(pane) = next {
+                    self.focus_attention_pane(&pane);
+                } else {
+                    self.show_notice(
+                        t_lang(self.lang, "No pending tasks", "没有待处理任务").into(),
+                    );
+                }
             }
             Cmd::Tasks => match self.cwd() {
                 Some(repo) => {
@@ -7159,6 +7185,16 @@ impl State {
             let prev = self
                 .agent_states
                 .insert(change.pane.clone(), change.state.clone());
+            if !switched_off(&self.badges, &change.state) {
+                self.attention_inbox.transition(
+                    &change.pane,
+                    &change.agent,
+                    prev.as_deref(),
+                    &change.state,
+                );
+            } else {
+                self.attention_inbox.dismiss(&change.pane);
+            }
             if let Some(item) =
                 self.prompt_queue
                     .on_state(&change.pane, prev.as_deref(), &change.state)
@@ -7203,6 +7239,11 @@ impl State {
                 self.alert_target = Some((change.pane.clone(), Instant::now()));
             }
         }
+        let tabs = &self.tabs;
+        self.attention_inbox.retain_panes(|id| {
+            tabs.iter()
+                .any(|tab| tab.panes.iter().any(|pane| pane.id == id))
+        });
         if !deliveries.is_empty() {
             for item in deliveries {
                 self.deliver_prompt(item);
@@ -15704,6 +15745,8 @@ impl ApplicationHandler<HostEvent> for Host {
             pending_transport_connects: 0,
             task_dialog: None,
             tasks_view: None,
+            attention_inbox: mtty_ui::attention::Inbox::default(),
+            attention_open: false,
             host_book: Default::default(),
             host_book_error: None,
             hosts_view: None,

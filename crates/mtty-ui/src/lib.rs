@@ -6,6 +6,7 @@
 //! instead of duplicated (ADR 0030, step 2/4).
 
 pub mod agentloop;
+pub mod attention;
 pub mod chrome;
 pub mod forward;
 pub mod ftp;

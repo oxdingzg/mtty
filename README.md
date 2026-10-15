@@ -22,7 +22,7 @@ agents in one fast, native window. It is built on three pillars:
 |---|---|
 | **Terminal and remote** | GPU-rendered tabs and splits, session restore, host library, SSH keys, SFTP/FTP, port forwarding, jump hosts, snippets and broadcast input; serial, Telnet, raw TCP and encrypted `.ppk` key import |
 | **Editor** | Native panes, tree-sitter syntax highlighting, large-file view mode, multiple cursors, regex find/replace, Markdown and Mermaid preview, LSP, opt-in vim, folding and outline |
-| **Agent workspace** | Agent-state badges and notifications, prompt queue, per-task git worktrees, undoable inline edit proposals, ACP agents, context sharing and the MTP control plane |
+| **Agent workspace** | Agent-state badges and notifications, actionable attention inbox, prompt queue, per-task git worktrees, undoable inline edit proposals, ACP agents, context sharing and the MTP control plane |
 
 When miao is installed, the cat button at the top right starts `miao` in the current terminal, preserving its working directory and environment. It hides while that terminal runs miao and returns when the shell is ready again.
 
