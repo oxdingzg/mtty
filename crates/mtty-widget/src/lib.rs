@@ -1187,6 +1187,7 @@ enum JobDone {
         result: Result<mtty_ui::task_review::Review, String>,
     },
     TaskReviewRequested(Result<mtty_ui::tasks::Task, String>),
+    TaskCheckRequested(Result<(mtty_ui::tasks::Task, u64), String>),
     /// A merge (`merged`) or discard finished; the window then reloads.
     TaskDone {
         name: String,
@@ -5437,6 +5438,7 @@ enum Cmd {
     NewTask,
     Tasks,
     ReviewCurrentTask,
+    CheckCurrentTask,
     AttentionInbox,
     NextAttention,
     CommandHistory,
@@ -5574,6 +5576,14 @@ impl State {
             (
                 Cmd::ReviewCurrentTask,
                 t(l, "Review Current Task…", "审阅当前任务…"),
+            ),
+            (
+                Cmd::CheckCurrentTask,
+                t(
+                    l,
+                    "Check Current Task (git diff --check)",
+                    "检查当前任务（git diff --check）",
+                ),
             ),
             (Cmd::AttentionInbox, t(l, "Attention Inbox…", "待处理事项…")),
             (
@@ -6067,6 +6077,19 @@ impl State {
                     self.spawn_job(move || {
                         JobDone::TaskReviewRequested(mtty_ui::task_review::task_at(&cwd))
                     });
+                }
+            }
+            Cmd::CheckCurrentTask => {
+                if !self.read_only {
+                    if let Some(cwd) = self.cwd() {
+                        self.spawn_job(move || {
+                            JobDone::TaskCheckRequested((|| {
+                                let task = mtty_ui::task_review::task_at(&cwd)?;
+                                let revision = mtty_ui::task_review::snapshot(&task)?.fingerprint;
+                                Ok((task, revision))
+                            })())
+                        });
+                    }
                 }
             }
             Cmd::Tasks => match self.cwd() {
@@ -14863,6 +14886,13 @@ impl State {
                     "{}: {error}",
                     t(self.lang, "No task here", "此处没有任务")
                 )),
+            },
+            JobDone::TaskCheckRequested(result) => match result {
+                Ok((task, revision)) => {
+                    self.open_task_review(task.clone());
+                    self.start_task_check(task, "git diff --check".into(), revision);
+                }
+                Err(error) => self.show_notice(error),
             },
             JobDone::TaskReviewLoaded { task, result } => {
                 if let Some(view) = self

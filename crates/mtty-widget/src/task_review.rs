@@ -262,7 +262,7 @@ impl State {
         false
     }
 
-    fn start_task_check(&mut self, task: Task, command: String, revision: u64) {
+    pub(super) fn start_task_check(&mut self, task: Task, command: String, revision: u64) {
         let before = self.tabs.len();
         self.new_tab_in(Some(task.path.clone()));
         if self.tabs.len() != before + 1 {
