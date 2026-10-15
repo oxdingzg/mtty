@@ -132,7 +132,7 @@
 | 功能 | 状态 | 备注 |
 |---|---|---|
 | 配置文件 + ghostty / alacritty 导入 | 可用 | 本次修复:语法错误的 `config.toml` 会在状态栏提示原因 |
-| shell 集成(OSC 7、OSC 133、命令历史) | 可用 | zsh、bash、fish、PowerShell |
+| shell 集成(OSC 7、OSC 133、命令历史) | 可用 | zsh、bash、fish、PowerShell。“命令输出历史”在当前会话为每个窗格保留最多 50 条已结束命令 / 8 MiB 输出，附命令文本、目录、退出码和耗时。可筛选失败项、浏览/复制/导出输出、发到 Composer 或 Agent，并编辑审阅后在已空闲且位于原已知目录的原窗格重跑。每条命令捕获最多 2 MiB，预览限制超长行，复制/导出保留捕获文本 |
 | URL scheme 与单实例转发 | 可用 | 命令行与 macOS 浏览器/Finder 发来的 URL 事件均可 |
 | MTP 控制面与 `mtty-cli` | 可用 | 真实窗口冒烟覆盖 |
 | 版本检查与更新 | 可用 | 下载后程序内校验 SHA-256 与 minisign 签名(必需),macOS 安装并重启已端到端验证;Linux AppImage 签名更新已在实际窗口验证；Windows 桌面验收见 ACCEPTANCE |

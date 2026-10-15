@@ -40,6 +40,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Window, WindowId};
 
 mod attention;
+mod command_history;
 mod drag;
 mod editor_pane;
 mod live_markdown;
@@ -1194,6 +1195,10 @@ enum JobDone {
         text: Vec<u8>,
         result: std::io::Result<()>,
     },
+    CommandExport {
+        path: String,
+        result: std::io::Result<()>,
+    },
     /// A remote editor pane's length/mtime, probed over ssh in the
     /// background; `None` when the probe failed (a silent no-op).
     RemotePolled {
@@ -1942,6 +1947,7 @@ struct State {
     tasks_view: Option<TasksView>,
     attention_inbox: mtty_ui::attention::Inbox,
     attention_open: bool,
+    command_history: Option<command_history::View>,
     /// Saved SSH hosts (B3.1). `host_book_error` blocks saving over a
     /// hosts.toml that could not be read.
     host_book: mtty_config::hosts::HostBook,
@@ -4527,6 +4533,7 @@ impl State {
         self.task_dialog_window(ctx);
         self.tasks_window(ctx);
         self.attention_window(ctx);
+        self.command_history_window(ctx);
         self.hosts_window(ctx);
         self.sftp_window(ctx);
         self.snippets_window(ctx);
@@ -5382,6 +5389,7 @@ enum Cmd {
     Tasks,
     AttentionInbox,
     NextAttention,
+    CommandHistory,
     /// The active pane's last command output (OSC 133, B2.3).
     CopyLastOutput,
     SendLastOutput,
@@ -5514,6 +5522,10 @@ impl State {
             (Cmd::NewTask, t(l, "New Agent Task…", "新建 Agent 任务…")),
             (Cmd::Tasks, t(l, "Agent Tasks…", "Agent 任务…")),
             (Cmd::AttentionInbox, t(l, "Attention Inbox…", "待处理事项…")),
+            (
+                Cmd::CommandHistory,
+                t(l, "Command Output History…", "命令输出历史…"),
+            ),
             (
                 Cmd::NextAttention,
                 t(l, "Next Pending Task", "下一个待处理任务"),
@@ -5975,6 +5987,11 @@ impl State {
                     .as_ref()
                     .and_then(|(_, found)| found.iter().position(|f| *f));
                 self.task_dialog = Some((String::new(), first));
+            }
+            Cmd::CommandHistory => {
+                if let Some(pane) = self.active_pane_id() {
+                    self.command_history = Some(command_history::View::new(pane));
+                }
             }
             Cmd::AttentionInbox => self.attention_open = true,
             Cmd::NextAttention => {
@@ -14787,6 +14804,15 @@ impl State {
                     }
                 }
             },
+            JobDone::CommandExport { path, result } => match result {
+                Ok(()) => {
+                    self.show_notice(format!("{} {path}", t(self.lang, "Exported", "已导出")))
+                }
+                Err(error) => self.show_notice(format!(
+                    "{}: {error}",
+                    t(self.lang, "Export failed", "导出失败")
+                )),
+            },
             JobDone::RemoteWrite {
                 id,
                 dest,
@@ -15747,6 +15773,7 @@ impl ApplicationHandler<HostEvent> for Host {
             tasks_view: None,
             attention_inbox: mtty_ui::attention::Inbox::default(),
             attention_open: false,
+            command_history: None,
             host_book: Default::default(),
             host_book_error: None,
             hosts_view: None,

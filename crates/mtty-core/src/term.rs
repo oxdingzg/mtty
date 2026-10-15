@@ -62,12 +62,22 @@ pub struct Terminal {
     /// Output bytes of the running command, between OSC 133 `C` and `D`.
     capture: Option<Vec<u8>>,
     /// The last finished command's output (OSC 133 semantic prompts).
-    last_output: Option<CommandOutput>,
+    outputs: std::collections::VecDeque<CommandOutput>,
+    output_bytes: usize,
+    output_id: u64,
+    capture_started: Option<std::time::Instant>,
+    capture_cwd: Option<String>,
+    capture_command: Option<String>,
+    next_command: Option<String>,
 }
 
 /// A finished command's output, as plain text, with its exit status.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandOutput {
+    pub id: u64,
+    pub command: Option<String>,
+    pub cwd: Option<String>,
+    pub elapsed_ms: u64,
     pub text: String,
     pub exit: Option<i32>,
     /// The output was longer than the capture limit and was cut.
@@ -76,6 +86,8 @@ pub struct CommandOutput {
 
 /// The most output kept for one command.
 const MAX_CAPTURE: usize = 2 * 1024 * 1024;
+const MAX_HISTORY_BYTES: usize = 8 * 1024 * 1024;
+const MAX_HISTORY_COMMANDS: usize = 50;
 
 /// Closing the PTY can block: on Windows `ClosePseudoConsole` waits for the
 /// client process to exit, so a running shell would stall teardown for minutes
@@ -626,7 +638,13 @@ impl Terminal {
             graphics_enabled: true,
             scrollback,
             capture: None,
-            last_output: None,
+            outputs: Default::default(),
+            output_bytes: 0,
+            output_id: 0,
+            capture_started: None,
+            capture_cwd: None,
+            capture_command: None,
+            next_command: None,
             cell_px: (0, 0),
             default_colors: None,
         }
@@ -1092,13 +1110,36 @@ impl Terminal {
     /// The last finished command's output, when the shell marks commands
     /// with OSC 133 (the mtty zsh integration does).
     pub fn last_command_output(&self) -> Option<&CommandOutput> {
-        self.last_output.as_ref()
+        self.outputs.back()
+    }
+
+    /// Bounded history, in execution order. It does not survive a restart.
+    pub fn command_history(&self) -> &std::collections::VecDeque<CommandOutput> {
+        &self.outputs
+    }
+
+    pub fn command_running(&self) -> bool {
+        self.capture.is_some()
     }
 
     /// OSC 133: `C` starts a command's output, `D[;exit]` ends it.
     fn observe_semantic_prompt(&mut self, payload: &[u8]) {
         match payload.first() {
-            Some(b'C') => self.capture = Some(Vec::new()),
+            Some(b'E') => {
+                if let Some(command) = payload.strip_prefix(b"E;").and_then(percent_decode) {
+                    if self.capture.is_some() {
+                        self.capture_command = Some(command);
+                    } else {
+                        self.next_command = Some(command);
+                    }
+                }
+            }
+            Some(b'C') => {
+                self.capture = Some(Vec::new());
+                self.capture_started = Some(std::time::Instant::now());
+                self.capture_cwd = self.cwd.clone();
+                self.capture_command = self.next_command.take();
+            }
             Some(b'D') => {
                 let Some(buf) = self.capture.take() else {
                     return;
@@ -1109,11 +1150,27 @@ impl Terminal {
                     .and_then(|code| code.trim().parse().ok());
                 let truncated = buf.len() > MAX_CAPTURE;
                 let end = buf.len().min(MAX_CAPTURE);
-                self.last_output = Some(CommandOutput {
+                self.output_id = self.output_id.saturating_add(1);
+                let output = CommandOutput {
+                    id: self.output_id,
+                    command: self.capture_command.take(),
+                    cwd: self.capture_cwd.take(),
+                    elapsed_ms: self.capture_started.take().map_or(0, |start| {
+                        start.elapsed().as_millis().min(u64::MAX as u128) as u64
+                    }),
                     text: plain_text(&buf[..end]),
                     exit,
                     truncated,
-                });
+                };
+                self.output_bytes += output.text.len();
+                self.outputs.push_back(output);
+                while self.outputs.len() > MAX_HISTORY_COMMANDS
+                    || self.output_bytes > MAX_HISTORY_BYTES
+                {
+                    if let Some(old) = self.outputs.pop_front() {
+                        self.output_bytes -= old.text.len();
+                    }
+                }
             }
             _ => {}
         }
@@ -1426,7 +1483,10 @@ fn count_line_feeds(bytes: &[u8]) -> usize {
 fn parse_osc7(payload: &str) -> Option<String> {
     let rest = payload.strip_prefix("file://")?;
     let slash = rest.find('/')?;
-    let bytes = &rest.as_bytes()[slash..];
+    percent_decode(&rest.as_bytes()[slash..])
+}
+
+fn percent_decode(bytes: &[u8]) -> Option<String> {
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
@@ -2082,6 +2142,22 @@ mod tests {
             )
         });
         assert_eq!(out.text, "first\nsecond", "{shell}");
+        assert_eq!(
+            out.command.as_deref(),
+            Some(ok_then_fail),
+            "{shell}: command metadata"
+        );
+        let reported = out.cwd.as_deref().expect("execution directory");
+        let reported = if cfg!(windows) {
+            reported.trim_start_matches('/')
+        } else {
+            reported
+        };
+        assert_eq!(
+            std::fs::canonicalize(reported).unwrap(),
+            std::fs::canonicalize(&home).unwrap(),
+            "{shell}: execution directory"
+        );
         assert_eq!(out.exit, Some(fail_code), "{shell}");
         term.write("echo 中文\r".as_bytes());
         wait(&mut term, &|t| {
@@ -2173,6 +2249,40 @@ mod tests {
             b"\x1b[31mred\x1b[0m line\r\nprogress 10%\rprogress 100%\r\nab\x08c\x1b]0;title\x07\n";
         assert_eq!(plain_text(raw), "red line\nprogress 100%\nac");
         assert_eq!(plain_text("中文 输出\r\n".as_bytes()), "中文 输出");
+    }
+
+    #[test]
+    fn command_history_handles_early_and_late_metadata_and_evicts_old_entries() {
+        let mut term = make();
+        term.feed_for_test(b"\x1b]7;file://localhost/tmp/work\x07\x1b]133;E;echo%20%25%0Asecond\x07\x1b]133;C\x07one\x1b]133;D;2\x07");
+        let first = term.last_command_output().unwrap();
+        assert_eq!(first.command.as_deref(), Some("echo %\nsecond"));
+        assert_eq!(first.cwd.as_deref(), Some("/tmp/work"));
+        assert_eq!(first.exit, Some(2));
+        term.feed_for_test(b"\x1b]133;C\x07two\x1b]133;E;late%20command\x07\x1b]133;D;0\x07");
+        assert_eq!(
+            term.last_command_output().unwrap().command.as_deref(),
+            Some("late command")
+        );
+        assert_eq!(term.command_history()[0].text, "one");
+        for _ in 0..60 {
+            term.feed_for_test(b"\x1b]133;C\x07x\x1b]133;D;0\x07");
+        }
+        assert_eq!(term.command_history().len(), MAX_HISTORY_COMMANDS);
+        assert!(term.command_history().front().unwrap().id > 2);
+        assert!(!term.command_running());
+    }
+
+    #[test]
+    fn command_history_is_bounded_by_output_bytes_as_well_as_count() {
+        let mut term = make();
+        for _ in 0..6 {
+            term.observe_semantic_prompt(b"C");
+            term.capture = Some(vec![b'x'; MAX_CAPTURE]);
+            term.observe_semantic_prompt(b"D;0");
+        }
+        assert_eq!(term.command_history().len(), 4);
+        assert_eq!(term.output_bytes, MAX_HISTORY_BYTES);
     }
 
     #[test]
