@@ -504,7 +504,7 @@ impl Lsp {
                                 events.push(Event::Diagnostics(path));
                             }
                         }
-                        self.pending.retain(|(server, _)| *server != index);
+                        self.pending.retain(|(server, _), _| *server != index);
                     }
                     Incoming::Notification { method, params } => {
                         if method == "textDocument/publishDiagnostics" {
