@@ -547,7 +547,7 @@ pub struct AcpConfig {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AcpAgent {
     pub name: String,
-    /// The program and its arguments (`["codex", "acp"]`).
+    /// The adapter executable and its arguments (`["codex-acp"]`).
     pub command: Vec<String>,
     /// Environment passed to the agent subprocess (keep credentials private).
     pub env: std::collections::BTreeMap<String, String>,
