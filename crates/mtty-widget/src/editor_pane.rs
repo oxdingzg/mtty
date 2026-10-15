@@ -344,6 +344,8 @@ pub struct EditorPane {
     /// A remote file's stamp as of the last background probe (ADR 0034, E3);
     /// `None` until the first probe seeds it.
     pub remote_disk: Option<DiskStamp>,
+    /// Bytes last loaded or successfully saved, for content-based remote saves.
+    pub remote_original: Option<Vec<u8>>,
     /// A background stamp probe for this remote pane is running.
     pub remote_polling: bool,
     /// The file vanished on disk and the user has been told once.
@@ -551,6 +553,7 @@ impl EditorPane {
         let doc = Document::from_bytes(bytes).map_err(|e| e.to_string())?;
         let mut pane = Self::with_doc(id, PathBuf::from(&path), doc);
         pane.remote = Some(RemoteRef { dest, path });
+        pane.remote_original = Some(bytes.to_vec());
         pane.disk = None;
         Ok(pane)
     }
@@ -571,6 +574,7 @@ impl EditorPane {
             self.doc = doc;
             self.syntax = Syntax::for_file(&self.path, self.doc.rope());
             self.disk = None;
+            self.remote_original = Some(bytes.to_vec());
         }
     }
 
@@ -578,6 +582,7 @@ impl EditorPane {
     /// when nothing changed while the write ran.
     pub fn remote_saved(&mut self, sent: &[u8]) {
         self.saving = false;
+        self.remote_original = Some(sent.to_vec());
         if self.doc.to_bytes().as_slice() == sent {
             self.doc.mark_saved();
             self.close_armed = false;
@@ -598,6 +603,7 @@ impl EditorPane {
             diagnostics: Vec::new(),
             disk,
             remote_disk: None,
+            remote_original: None,
             remote_polling: false,
             missing_warned: false,
             folds: Vec::new(),
@@ -711,6 +717,7 @@ impl EditorPane {
             return false;
         }
         let changed = self.reload_with(bytes);
+        self.remote_original = Some(bytes.to_vec());
         self.remote_disk = Some(stamp);
         self.missing_warned = false;
         changed
@@ -2707,6 +2714,7 @@ mod tests {
         p.remote_saved(&stale);
         assert!(p.doc.is_modified());
         assert!(!p.saving);
+        assert_eq!(p.remote_original.as_deref(), Some(stale.as_slice()));
     }
 
     #[test]

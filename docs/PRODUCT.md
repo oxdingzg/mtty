@@ -108,7 +108,7 @@ point); problems fixed in M0–M3 are no longer listed.
 | Feature | Status | Notes |
 |---|---|---|
 | Session sidebar (full height) and tab bar (sidebar hidden): drag reorder, `+`, `×`, row menu (rename/prefix/mark/group/duplicate/move/close others/close below) | Works | Duplicate keeps mark and group; Close Others/Below can be reopened |
-| Split tree `⌘D` / `⇧⌘D`, divider drag, per-pane close | Works | New splits/tabs inherit the current directory (except SSH tabs); the pane context menu also splits Right/Left/Down/Up |
+| Split tree `⌘D` / `⇧⌘D`, divider drag, per-pane close | Works | Local splits/tabs inherit the current directory. SSH splits reuse the saved connection command; plain SSH sessions inherit reported remote directories when the bootstrap fits a PTY line. tmux/mosh keep their own session semantics. The pane context menu also splits Right/Left/Down/Up |
 | Pane right-click context menu | Works | Copy, Paste, Copy/Paste as (ANSI, shell-escaped), Composer, Send to Agent, Select All, Search, About This Line, Split Pane (Right/Left/Down/Up), Clear Scrollback; reuses the palette commands |
 | Quick Terminal `⌘⇧T`, reopen closed tab `⌘⇧Z` | Works | Reopen restores the directory only |
 | Global Quick Terminal hotkey | Works | Fixed now: one press did two things (switch to Quick, then hide the window) |
