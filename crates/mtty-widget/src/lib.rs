@@ -41,6 +41,7 @@ use winit::window::{Window, WindowId};
 
 mod acp_browser;
 mod attention;
+mod browser_verification;
 mod command_history;
 mod drag;
 mod editor_pane;
@@ -1138,6 +1139,19 @@ struct Editor {
 /// Work finished on a background thread. Network and process work never runs
 /// on the UI thread; the result comes back through `State::jobs_rx`.
 enum JobDone {
+    BrowserContextLoaded {
+        epoch: u64,
+        run: bool,
+        result: Result<mtty_ui::browser::Context, String>,
+    },
+    BrowserPlanned {
+        epoch: u64,
+        result: Result<mtty_ui::browser::Plan, String>,
+    },
+    BrowserCollected {
+        id: u64,
+        result: Result<mtty_ui::browser::Report, String>,
+    },
     /// Bytes read over ssh. `id` is `Some` when the pane already exists
     /// (session restore); `None` opens a new editor pane (remote dialog).
     RemoteRead {
@@ -2024,6 +2038,11 @@ struct State {
     attention_inbox: mtty_ui::attention::Inbox,
     attention_open: bool,
     command_history: Option<command_history::View>,
+    browser_view: Option<browser_verification::View>,
+    browser_runs: Vec<browser_verification::Run>,
+    browser_epoch: u64,
+    browser_command: Option<String>,
+    browser_url: String,
     /// Saved SSH hosts (B3.1). `host_book_error` blocks saving over a
     /// hosts.toml that could not be read.
     host_book: mtty_config::hosts::HostBook,
@@ -4652,6 +4671,7 @@ impl State {
         self.task_review_window(ctx);
         self.attention_window(ctx);
         self.command_history_window(ctx);
+        self.browser_verification_window(ctx);
         self.hosts_window(ctx);
         self.sftp_window(ctx);
         self.snippets_window(ctx);
@@ -5539,6 +5559,8 @@ enum Cmd {
     AttentionInbox,
     NextAttention,
     CommandHistory,
+    BrowserVerification,
+    RunBrowserVerification,
     /// The active pane's last command output (OSC 133, B2.3).
     CopyLastOutput,
     SendLastOutput,
@@ -5686,6 +5708,14 @@ impl State {
                 ),
             ),
             (Cmd::AttentionInbox, t(l, "Attention Inbox…", "待处理事项…")),
+            (
+                Cmd::BrowserVerification,
+                t(l, "Browser Verification…", "浏览器验证…"),
+            ),
+            (
+                Cmd::RunBrowserVerification,
+                t(l, "Run Browser Verification", "运行浏览器验证"),
+            ),
             (
                 Cmd::CommandHistory,
                 t(l, "Command Output History…", "命令输出历史…"),
@@ -6164,6 +6194,8 @@ impl State {
                     .and_then(|(_, found)| found.iter().position(|f| *f));
                 self.task_dialog = Some((String::new(), first));
             }
+            Cmd::BrowserVerification => self.open_browser_verification(false),
+            Cmd::RunBrowserVerification => self.open_browser_verification(true),
             Cmd::CommandHistory => {
                 if let Some(pane) = self.active_pane_id() {
                     self.command_history = Some(command_history::View::new(pane));
@@ -14918,6 +14950,62 @@ impl State {
     fn finish_job(&mut self, done: JobDone) {
         use mtty_ui::i18n::t;
         match done {
+            JobDone::BrowserContextLoaded { epoch, run, result } => {
+                if let Some(view) = self
+                    .browser_view
+                    .as_mut()
+                    .filter(|view| view.epoch == epoch)
+                {
+                    view.loading = false;
+                    match result {
+                        Ok(context) => view.context = Some(context),
+                        Err(error) => view.error = Some(error),
+                    }
+                }
+                if run
+                    && self
+                        .browser_view
+                        .as_ref()
+                        .is_some_and(|view| view.epoch == epoch && view.context.is_some())
+                {
+                    self.prepare_browser_run();
+                }
+            }
+            JobDone::BrowserPlanned { epoch, result } => {
+                if !self
+                    .browser_view
+                    .as_ref()
+                    .is_some_and(|view| view.epoch == epoch)
+                {
+                    return;
+                }
+                if let Some(view) = &mut self.browser_view {
+                    view.loading = false;
+                }
+                match result {
+                    Ok(plan) => self.start_browser_run(plan),
+                    Err(error) => {
+                        if let Some(view) = &mut self.browser_view {
+                            view.error = Some(error)
+                        }
+                    }
+                }
+            }
+            JobDone::BrowserCollected { id, result } => {
+                if let Some(run) = self.browser_runs.iter_mut().find(|run| run.id == id) {
+                    run.result = Some(result);
+                }
+                while self.browser_runs.len() > 20 {
+                    let Some(index) = self
+                        .browser_runs
+                        .iter()
+                        .position(|run| run.result.is_some())
+                    else {
+                        break;
+                    };
+                    self.browser_runs.remove(index);
+                }
+            }
             JobDone::AcpEnvelope { epoch, message } => {
                 let valid = self.acp.as_ref().is_some_and(|acp| {
                     acp.epoch == epoch
@@ -16259,6 +16347,11 @@ impl ApplicationHandler<HostEvent> for Host {
             attention_inbox: mtty_ui::attention::Inbox::default(),
             attention_open: false,
             command_history: None,
+            browser_view: None,
+            browser_runs: Vec::new(),
+            browser_epoch: 0,
+            browser_command: cfg.browser_command.clone(),
+            browser_url: cfg.browser_url.clone(),
             host_book: Default::default(),
             host_book_error: None,
             hosts_view: None,
@@ -16607,6 +16700,7 @@ impl ApplicationHandler<HostEvent> for Host {
             }
             state.poll_project_runs();
             state.poll_task_checks();
+            state.poll_browser_runs();
             state.reap_exited();
             state.save_scrollback_periodically();
             let drawable = window_drawable(&state.window, state.occluded);

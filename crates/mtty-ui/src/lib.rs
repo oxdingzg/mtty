@@ -8,6 +8,7 @@
 pub mod acp_adapters;
 pub mod agentloop;
 pub mod attention;
+pub mod browser;
 pub mod chrome;
 pub mod file_link;
 pub mod forward;

@@ -164,7 +164,7 @@ impl State {
                 });
                 ui.label(t(lang, "Task completion is separate from verification. Results refer to the revision that was checked.", "任务完成与验证通过分别展示。验证结果关联运行时的改动版本。"));
                 for check in data.state.checks.iter().rev().take(5) {
-                    let result = match check.exit { Some(0) => t(lang, "Passed", "通过"), Some(_) => t(lang, "Failed", "失败"), None => t(lang, "No captured exit / cancelled", "未捕获退出码／已取消") };
+                    let result = if check.exit==Some(0)&&!check.passed(){t(lang,"Evidence failed","证据校验失败")}else{match check.exit { Some(0) => t(lang, "Passed", "通过"), Some(_) => t(lang, "Failed", "失败"), None => t(lang, "No captured exit / cancelled", "未捕获退出码／已取消") }};
                     let stale = if check.revision != data.snapshot.fingerprint { t(lang, " · older revision", " · 较早版本") } else { "" };
                     let exit = check.exit.map_or_else(|| "?".to_owned(), |code| code.to_string());
                     ui.collapsing(format!("{result}{stale} · {} · exit {exit}", check.command), |ui| {
@@ -333,6 +333,7 @@ impl State {
                     finished_at: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0, |duration| duration.as_secs()),
+                    browser: None,
                 };
                 JobDone::TaskReviewLoaded {
                     result: model::record_check(&task, check),
