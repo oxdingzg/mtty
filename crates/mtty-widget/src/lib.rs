@@ -47,6 +47,7 @@ mod live_markdown;
 mod macos_url;
 mod quick_content;
 mod redraw;
+mod remote_conflict;
 pub mod resource_metrics;
 mod session;
 mod task_review;
@@ -1199,6 +1200,12 @@ enum JobDone {
         text: Vec<u8>,
         result: std::io::Result<()>,
     },
+    RemoteConflict {
+        id: Option<String>,
+        dest: String,
+        path: String,
+        result: std::io::Result<Vec<u8>>,
+    },
     /// A remote editor pane's length/mtime, probed over ssh in the
     /// background; `None` when the probe failed (a silent no-op).
     RemotePolled {
@@ -1920,6 +1927,7 @@ struct State {
     palette_idx: usize,
     show_settings: bool,
     editor: Option<Editor>,
+    remote_conflicts: Vec<remote_conflict::Conflict>,
     open_path: String,
     show_open: bool,
     recipe_dialog: Option<bool>,
@@ -3253,9 +3261,40 @@ impl State {
     }
 
     fn split(&mut self, dir: SplitDir) {
-        let Some(pane) = self.spawn_pane(self.active_cwd_for_new()) else {
+        let remote_command = self
+            .tabs
+            .get(self.active_tab)
+            .filter(|tab| tab.ssh)
+            .and_then(|tab| {
+                tab.ssh_cmd.clone().or_else(|| {
+                    tab.ssh_target
+                        .as_deref()
+                        .and_then(mtty_ui::ssh::session_command)
+                        .map(|(_, cmd)| cmd)
+                })
+            });
+        let remote_command = remote_command.map(|cmd| {
+            mtty_ui::ssh::command_in_directory(
+                &cmd,
+                self.active_pane().and_then(|pane| {
+                    let target = self
+                        .tabs
+                        .get(self.active_tab)
+                        .and_then(|tab| tab.ssh_target.as_deref())
+                        .map(ssh_host);
+                    pane.term
+                        .cwd_host()
+                        .filter(|host| *host == "mtty-remote" || Some(*host) == target.as_deref())
+                        .and_then(|_| pane.term.cwd())
+                }),
+            )
+        });
+        let Some(mut pane) = self.spawn_pane(self.active_cwd_for_new()) else {
             return;
         };
+        if let Some(command) = remote_command {
+            pane.term.write(typed_ssh(&command).as_bytes());
+        }
         let new_id = pane.id.clone();
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
             let target = tab.active.clone();
@@ -4525,6 +4564,7 @@ impl State {
         self.settings_window(ctx);
         self.open_dialog_window(ctx);
         self.editor_window(ctx);
+        self.remote_conflict_window(ctx);
         self.recipe_dialog_window(ctx);
         self.ssh_dialog_window(ctx);
         self.transport_dialog_window(ctx);
@@ -13384,6 +13424,7 @@ impl State {
     /// edits; keep the edits otherwise. A failed probe is a no-op.
     fn remote_pane_polled(&mut self, id: &str, stamp: Option<editor_pane::DiskStamp>) {
         let mut reload: Option<(String, String, String, editor_pane::DiskStamp)> = None;
+        let mut conflict = None;
         for tab in &mut self.tabs {
             let Some(ed) = tab.editors.iter_mut().find(|e| e.id == id) else {
                 continue;
@@ -13403,6 +13444,13 @@ impl State {
                     if let Some(s) = stamp {
                         ed.note_remote_stamp(s);
                     }
+                    if let Some(remote) = &ed.remote {
+                        conflict = Some((
+                            Some(ed.id.clone()),
+                            remote.dest.clone(),
+                            remote.path.clone(),
+                        ));
+                    }
                 }
                 editor_pane::RemotePollOutcome::Reload => {
                     // The read is now in flight; `remote_polling` stays set so
@@ -13415,6 +13463,9 @@ impl State {
                 }
             }
             break;
+        }
+        if let Some((id, dest, path)) = conflict {
+            self.read_remote_conflict(id, dest, path);
         }
         if let Some((id, dest, path, stamp)) = reload {
             self.spawn_job(move || {
@@ -14014,6 +14065,20 @@ impl State {
                 Some(ed) => ed.doc.to_bytes(),
                 None => return,
             };
+            let Some(expected) = self
+                .active_editor()
+                .and_then(|ed| ed.remote_original.clone())
+            else {
+                self.show_notice(
+                    t_lang(
+                        lang,
+                        "Remote file has not finished loading",
+                        "远程文件尚未加载完成",
+                    )
+                    .into(),
+                );
+                return;
+            };
             if let Some(ed) = self.active_editor_mut() {
                 ed.saving = true;
             }
@@ -14023,7 +14088,7 @@ impl State {
             );
             self.show_notice(msg);
             self.spawn_job(move || {
-                let result = mtty_ui::ssh::write_remote(&dest, &path, &bytes);
+                let result = mtty_ui::ssh::write_remote_checked(&dest, &path, &expected, &bytes);
                 JobDone::RemoteWrite {
                     id: Some(id),
                     dest,
@@ -14437,8 +14502,14 @@ impl State {
             if !ed.saving {
                 ed.saving = true;
                 let text = ed.text.clone();
+                let expected = ed.original.clone();
                 self.spawn_job(move || {
-                    let result = mtty_ui::ssh::write_remote(&dest, &path, text.as_bytes());
+                    let result = mtty_ui::ssh::write_remote_checked(
+                        &dest,
+                        &path,
+                        expected.as_bytes(),
+                        text.as_bytes(),
+                    );
                     JobDone::RemoteWrite {
                         id: None,
                         dest,
@@ -14822,6 +14893,13 @@ impl State {
                 text,
                 result,
             } => {
+                let conflict = result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists);
+                if conflict {
+                    self.read_remote_conflict(id.clone(), dest.clone(), path.clone());
+                }
                 if let Some(id) = id {
                     self.finish_pane_remote_write(&id, dest, path, &text, result);
                 } else {
@@ -14860,6 +14938,31 @@ impl State {
             JobDone::RemotePolled { id, stamp } => {
                 self.remote_pane_polled(&id, stamp);
             }
+            JobDone::RemoteConflict {
+                id,
+                dest,
+                path,
+                result,
+            } => match result {
+                Ok(bytes) => {
+                    self.remote_conflicts
+                        .retain(|item| item.id != id || item.dest != dest || item.path != path);
+                    self.remote_conflicts.push(remote_conflict::Conflict {
+                        id,
+                        dest,
+                        path,
+                        bytes,
+                    });
+                }
+                Err(error) => self.show_notice(format!(
+                    "{}: {error}",
+                    t(
+                        self.lang,
+                        "Could not load remote conflict",
+                        "无法读取远程冲突版本"
+                    )
+                )),
+            },
             JobDone::RemoteReloaded { id, stamp, result } => {
                 self.remote_pane_reloaded(&id, stamp, result);
             }
@@ -15757,6 +15860,7 @@ impl ApplicationHandler<HostEvent> for Host {
             palette_idx: 0,
             show_settings: false,
             editor: None,
+            remote_conflicts: Vec::new(),
             open_path: String::new(),
             show_open: false,
             recipe_dialog: None,

@@ -216,6 +216,35 @@ pub fn host_command(destination: &str, options: &[String]) -> String {
     )
 }
 
+/// Reuse the exact connection options of a plain SSH command, changing only
+/// its bootstrap's initial directory. tmux/mosh reconnect commands retain
+/// their own session semantics and are returned unchanged.
+pub fn command_in_directory(command: &str, directory: Option<&str>) -> String {
+    let Some(directory) = directory.filter(|dir| dir.starts_with('/')) else {
+        return command.to_owned();
+    };
+    let boot = bootstrap("xterm-256color");
+    let Some(body) = boot
+        .strip_prefix("sh -c '")
+        .and_then(|body| body.strip_suffix('\''))
+    else {
+        return command.to_owned();
+    };
+    let body = body.replacen(
+        "export TERM=",
+        &format!("cd {} || exit; export TERM=", shell_quote(directory)),
+        1,
+    );
+    let new_boot = format!("sh -c {}", shell_quote(&body));
+    let syntax = Syntax::local();
+    let result = command.replacen(&syntax.quote(&boot), &syntax.quote(&new_boot), 1);
+    if result.len() <= 1000 {
+        result
+    } else {
+        command.to_owned()
+    }
+}
+
 fn host_command_with(syn: Syntax, destination: &str, options: &[String], boot: &str) -> String {
     let mut cmd = String::from("ssh -t");
     for arg in reuse_options().iter().chain(options) {
@@ -345,13 +374,14 @@ pub fn command(target: &Target, bootstrap: &str) -> String {
 /// The remote bootstrap: install the local terminfo entry if the host lacks it,
 /// else fall back to `xterm-256color`, then start a login shell.
 pub fn bootstrap_with(terminfo_b64: Option<&str>, term: &str) -> String {
+    let report = "printf \"\\033]7;file://mtty-remote%s\\033\\\\\" \"$(printf %s \"$PWD\" | sed \"s/%/%25/g\")\"";
     match terminfo_b64 {
         Some(b64) => format!(
             "sh -c 'if ! infocmp {term} >/dev/null 2>&1; then mkdir -p ~/.terminfo && \
              echo {b64} | base64 -d | tic -x -o ~/.terminfo - >/dev/null 2>&1; fi; \
-             export TERM={term}; exec ${{SHELL:-sh}} -l'"
+             export TERM={term}; {report}; exec ${{SHELL:-sh}} -l'"
         ),
-        None => "sh -c 'export TERM=xterm-256color; exec ${SHELL:-sh} -l'".to_string(),
+        None => format!("sh -c 'export TERM=xterm-256color; {report}; exec ${{SHELL:-sh}} -l'"),
     }
 }
 
@@ -419,7 +449,11 @@ pub const MAX_REMOTE_BYTES: u64 = 2 * 1024 * 1024;
 pub fn read_args(dest: &str, path: &str) -> Vec<String> {
     let mut args = base_args();
     args.push(dest.to_string());
-    args.push(format!("cat -- {}", shell_quote(path)));
+    args.push(format!(
+        "head -c {} -- {}",
+        MAX_REMOTE_BYTES + 1,
+        shell_quote(path)
+    ));
     args
 }
 
@@ -447,9 +481,12 @@ pub fn read_remote(dest: &str, path: &str) -> std::io::Result<Vec<u8>> {
             String::from_utf8_lossy(&out.stderr).trim().to_string(),
         ));
     }
-    let mut data = out.stdout;
-    data.truncate(MAX_REMOTE_BYTES as usize);
-    Ok(data)
+    if out.stdout.len() > MAX_REMOTE_BYTES as usize {
+        return Err(std::io::Error::other(
+            "remote file exceeds the editable size limit",
+        ));
+    }
+    Ok(out.stdout)
 }
 
 /// The `ssh` argv for probing a remote file's length and mtime, reusing the
@@ -508,6 +545,66 @@ pub fn write_remote(dest: &str, path: &str, data: &[u8]) -> std::io::Result<()> 
         ));
     }
     Ok(())
+}
+
+/// A content-checked, same-directory replacement. The original stays intact
+/// if transfer or decoding fails. This is optimistic concurrency: external
+/// writers do not share a lock, so a comparison cannot be an atomic CAS.
+fn checked_write_script(path: &str, expected: &[u8], data: &[u8]) -> String {
+    format!(
+        "set -eu\np={}\ncase $p in /*) ;; *) p=./$p ;; esac\n\
+         links=0\nwhile [ -L \"$p\" ]; do\n\
+         links=$((links + 1)); [ $links -le 40 ] || exit 1\n\
+         link=$(readlink \"$p\"); case $link in /*) p=$link ;; *) p=$(dirname \"$p\")/$link ;; esac\n\
+         done\n\
+         dir=$(dirname \"$p\")\n\
+         tmp=$(mktemp \"$dir/.mtty-save.XXXXXX\")\n\
+         old=$(mktemp \"$dir/.mtty-base.XXXXXX\")\n\
+         trap 'rm -f \"$tmp\" \"$old\"' EXIT HUP INT TERM\n\
+         if base64 -d </dev/null >/dev/null 2>&1; then decode=-d; else decode=-D; fi\n\
+         base64 $decode >\"$old\" <<'MTTY_BASE'\n{}\nMTTY_BASE\n\
+         if ! cmp -s \"$p\" \"$old\"; then echo 'remote file changed; review before saving' >&2; exit 73; fi\n\
+         cp -p \"$p\" \"$tmp\"\n\
+         base64 $decode >\"$tmp\" <<'MTTY_DATA'\n{}\nMTTY_DATA\n\
+         if ! cmp -s \"$p\" \"$old\"; then echo 'remote file changed during save' >&2; exit 73; fi\n\
+         mv -f \"$tmp\" \"$p\"\n",
+        shell_quote(path), base64_encode(expected), base64_encode(data),
+    )
+}
+
+pub fn write_remote_checked(
+    dest: &str,
+    path: &str,
+    expected: &[u8],
+    data: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut args = base_args();
+    args.extend([dest.to_owned(), "sh -s".to_owned()]);
+    let mut child = mtty_platform::background_command("ssh")
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let transfer = child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(checked_write_script(path, expected, data).as_bytes());
+    let out = child.wait_with_output()?;
+    if !out.status.success() {
+        let kind = if out.status.code() == Some(73) {
+            std::io::ErrorKind::AlreadyExists
+        } else {
+            std::io::ErrorKind::Other
+        };
+        return Err(std::io::Error::new(
+            kind,
+            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        ));
+    }
+    transfer
 }
 
 pub fn shell_quote(s: &str) -> String {
@@ -611,10 +708,8 @@ mod tests {
                 .unwrap();
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
-        assert_eq!(
-            run(&format!("{}:/usr/bin:/bin", dir.display())),
-            "tmux new-session -A -s mtty"
-        );
+        assert!(run(&format!("{}:/usr/bin:/bin", dir.display()))
+            .ends_with("tmux new-session -A -s mtty"));
         // The fallback: PATH is an empty directory (the script needs only
         // builtins); the bootstrap also looks in Homebrew's directories.
         let empty = dir.join("empty");
@@ -623,7 +718,7 @@ mod tests {
             .iter()
             .any(|p| std::path::Path::new(p).exists());
         if !installed {
-            assert_eq!(run(&empty.to_string_lossy()), "-l");
+            assert!(run(&empty.to_string_lossy()).ends_with("-l"));
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -738,7 +833,10 @@ mod tests {
             r.iter().any(|a| a.starts_with("ControlPath=")),
             !cfg!(windows)
         );
-        assert_eq!(r.last().unwrap(), "cat -- '/tmp/a b.txt'");
+        assert_eq!(
+            r.last().unwrap(),
+            &format!("head -c {} -- '/tmp/a b.txt'", super::MAX_REMOTE_BYTES + 1)
+        );
         let w = write_args("u@h", "x");
         assert_eq!(w.last().unwrap(), "cat > 'x'");
     }
@@ -767,5 +865,94 @@ mod tests {
         assert_eq!(base64_encode(b"fo"), "Zm8=");
         assert_eq!(base64_encode(b"foo"), "Zm9v");
         assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn checked_save_executes_without_truncating_conflicts_and_preserves_symlinks() {
+        use std::io::Write;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = std::env::temp_dir().join(format!("mtty-checked-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a ' quoted.txt");
+        std::fs::write(&file, b"original\0bytes").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o640)).unwrap();
+        let link = dir.join("link.txt");
+        symlink(file.file_name().unwrap(), &link).unwrap();
+        let run = |expected: &[u8], data: &[u8]| {
+            let mut child = std::process::Command::new("/bin/sh")
+                .stdin(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(checked_write_script(&link.to_string_lossy(), expected, data).as_bytes())
+                .unwrap();
+            child.wait_with_output().unwrap()
+        };
+        assert_eq!(run(b"stale", b"must not overwrite").status.code(), Some(73));
+        assert_eq!(std::fs::read(&file).unwrap(), b"original\0bytes");
+        let out = run(b"original\0bytes", b"saved\0new\n");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"saved\0new\n");
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn split_bootstrap_preserves_options_and_really_changes_quoted_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mtty-ssh-dir-{}", std::process::id()));
+        let cwd = dir.join("space ' quote % percent");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let ssh = dir.join("ssh");
+        std::fs::write(
+            &ssh,
+            "#!/bin/sh\nfor arg do last=$arg; done\nexec /bin/sh -c \"$last\"\n",
+        )
+        .unwrap();
+        let shell = dir.join("shell");
+        std::fs::write(&shell, "#!/bin/sh\npwd\n").unwrap();
+        for file in [&ssh, &shell] {
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let cmd = host_command("example.invalid", &["-p".into(), "2222".into()]);
+        let changed = command_in_directory(&cmd, Some(&cwd.to_string_lossy()));
+        assert!(changed.contains(" -p '2222' "));
+        let out = std::process::Command::new("/bin/sh")
+            .args(["-c", &changed])
+            .env("PATH", format!("{}:/usr/bin:/bin", dir.display()))
+            .env("SHELL", &shell)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(text.contains("file://mtty-remote"));
+        assert!(text.contains("%25 percent"));
+        assert!(text.ends_with(&format!("{}\n", cwd.display())), "{text}");
+        assert_eq!(command_in_directory(&cmd, None), cmd);
+        let tmux = persistent_host_command("example.invalid", &[], Some("mtty"), false);
+        assert_eq!(command_in_directory(&tmux, Some("/tmp")), tmux);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

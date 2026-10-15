@@ -112,11 +112,16 @@ Close Others/Below or quitting asks first. Local files are watched: clean panes
 reload as one undoable transaction; modified panes ask whether to reload or keep
 the local version. A deleted local file is reported once.
 
-Remote saves stream bytes over SSH with `cat > path`; they are not atomic file
-replacement. Remote panes poll for changes and reload only while clean. If the
-buffer has unsaved edits, those edits are kept without a reload prompt. Failed
-remote probes or reload reads do not replace the buffer. Review remote changes
-before saving a locally modified buffer.
+Remote saves compare the file with the bytes last loaded or saved, then replace
+it using a temporary file in the same directory, preserving permissions and
+following symbolic links. A transfer failure leaves the original intact. When
+the remote file changed, a conflict window preserves your edits and shows the
+local and remote versions: keep editing, reload the remote version, or save over
+the reviewed version. The last option checks that version again before writing.
+These checks are optimistic, not an atomic compare-and-swap against external
+writers. Remote panes also poll for changes: clean panes reload; modified panes
+offer conflict review. Failed probes or reads do not replace the buffer. Remote
+files over 2 MiB are rejected rather than opening a truncated editable buffer.
 
 ## Configuration and keys
 
