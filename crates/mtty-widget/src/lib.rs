@@ -49,6 +49,7 @@ mod quick_content;
 mod redraw;
 pub mod resource_metrics;
 mod session;
+mod task_review;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod wayland_dnd;
 
@@ -1179,6 +1180,10 @@ enum JobDone {
         name: String,
         result: Result<String, String>,
     },
+    TaskReviewLoaded {
+        task: mtty_ui::tasks::Task,
+        result: Result<mtty_ui::task_review::Review, String>,
+    },
     /// A merge (`merged`) or discard finished; the window then reloads.
     TaskDone {
         name: String,
@@ -1940,6 +1945,8 @@ struct State {
     task_dialog: Option<(String, Option<usize>)>,
     /// The Agent Tasks window.
     tasks_view: Option<TasksView>,
+    task_review: Option<task_review::View>,
+    task_checks: Vec<task_review::PendingCheck>,
     attention_inbox: mtty_ui::attention::Inbox,
     attention_open: bool,
     /// Saved SSH hosts (B3.1). `host_book_error` blocks saving over a
@@ -4526,6 +4533,7 @@ impl State {
         self.acp_window(ctx);
         self.task_dialog_window(ctx);
         self.tasks_window(ctx);
+        self.task_review_window(ctx);
         self.attention_window(ctx);
         self.hosts_window(ctx);
         self.sftp_window(ctx);
@@ -12177,6 +12185,9 @@ impl State {
                             if ui.button(t(lang, "Diff", "查看改动")).clicked() {
                                 action = Some((i, "diff"));
                             }
+                            if ui.button(t(lang, "Review…", "审阅…")).clicked() {
+                                action = Some((i, "review"));
+                            }
                             match view.confirm {
                                 Some((c, merge)) if c == i => {
                                     let label = if merge {
@@ -12236,6 +12247,7 @@ impl State {
                 }
                 self.publish_panes();
             }
+            "review" => self.open_task_review(task),
             "diff" => self.spawn_job(move || {
                 let result = mtty_ui::tasks::diff(&task);
                 JobDone::TaskDiff {
@@ -14744,6 +14756,22 @@ impl State {
                     self.show_notice(msg);
                 }
             },
+            JobDone::TaskReviewLoaded { task, result } => {
+                if let Some(view) = self
+                    .task_review
+                    .as_mut()
+                    .filter(|view| view.task.path == task.path)
+                {
+                    view.loading = false;
+                    match result {
+                        Ok(data) => view.data = Some(data),
+                        Err(error) => self.show_notice(format!(
+                            "{}: {error}",
+                            t(self.lang, "Review failed", "审阅失败")
+                        )),
+                    }
+                }
+            }
             JobDone::TaskDone {
                 name,
                 merged,
@@ -15745,6 +15773,8 @@ impl ApplicationHandler<HostEvent> for Host {
             pending_transport_connects: 0,
             task_dialog: None,
             tasks_view: None,
+            task_review: None,
+            task_checks: Vec::new(),
             attention_inbox: mtty_ui::attention::Inbox::default(),
             attention_open: false,
             host_book: Default::default(),
@@ -16080,6 +16110,7 @@ impl ApplicationHandler<HostEvent> for Host {
                     pip.window.request_redraw();
                 }
             }
+            state.poll_task_checks();
             state.reap_exited();
             state.save_scrollback_periodically();
             let drawable = window_drawable(&state.window, state.occluded);
