@@ -42,6 +42,7 @@ use winit::window::{Window, WindowId};
 mod acp_browser;
 mod attention;
 mod command_history;
+mod data_preview;
 mod drag;
 mod editor_pane;
 mod live_markdown;
@@ -1158,6 +1159,10 @@ enum JobDone {
         encoding: mtty_lsp::Encoding,
         result: std::io::Result<Vec<u8>>,
     },
+    DataPreviewLoaded {
+        epoch: u64,
+        result: Result<mtty_ui::data_preview::Preview, String>,
+    },
     /// Bytes read over ssh. `id` is `Some` when the pane already exists
     /// (session restore); `None` opens a new editor pane (remote dialog).
     RemoteRead {
@@ -2044,6 +2049,8 @@ struct State {
     attention_inbox: mtty_ui::attention::Inbox,
     attention_open: bool,
     command_history: Option<command_history::View>,
+    data_preview: Option<data_preview::View>,
+    data_preview_epoch: u64,
     /// Saved SSH hosts (B3.1). `host_book_error` blocks saving over a
     /// hosts.toml that could not be read.
     host_book: mtty_config::hosts::HostBook,
@@ -4673,6 +4680,7 @@ impl State {
         self.task_review_window(ctx);
         self.attention_window(ctx);
         self.command_history_window(ctx);
+        self.data_preview_window(ctx);
         self.hosts_window(ctx);
         self.sftp_window(ctx);
         self.snippets_window(ctx);
@@ -5578,6 +5586,7 @@ enum Cmd {
     NextAttention,
     CommandHistory,
     RestartLanguageServers,
+    DataPreview,
     /// The active pane's last command output (OSC 133, B2.3).
     CopyLastOutput,
     SendLastOutput,
@@ -5732,6 +5741,10 @@ impl State {
             (
                 Cmd::CommandHistory,
                 t(l, "Command Output History…", "命令输出历史…"),
+            ),
+            (
+                Cmd::DataPreview,
+                t(l, "Preview JSON / CSV / Log…", "预览 JSON / CSV / 日志…"),
             ),
             (
                 Cmd::NextAttention,
@@ -6208,6 +6221,7 @@ impl State {
                 self.task_dialog = Some((String::new(), first));
             }
             Cmd::RestartLanguageServers => self.restart_language_servers(),
+            Cmd::DataPreview => self.open_data_preview(None),
             Cmd::CommandHistory => {
                 if let Some(pane) = self.active_pane_id() {
                     self.command_history = Some(command_history::View::new(pane));
@@ -15028,6 +15042,22 @@ impl State {
     fn finish_job(&mut self, done: JobDone) {
         use mtty_ui::i18n::t;
         match done {
+            JobDone::DataPreviewLoaded { epoch, result } => {
+                if let Some(view) = self
+                    .data_preview
+                    .as_mut()
+                    .filter(|view| view.epoch == epoch)
+                {
+                    view.loading = false;
+                    match result {
+                        Ok(data) => {
+                            view.data = Some(data);
+                            view.rebuild();
+                        }
+                        Err(error) => view.error = Some(error),
+                    }
+                }
+            }
             JobDone::RemoteLspResolved {
                 epoch,
                 id,
@@ -16470,6 +16500,8 @@ impl ApplicationHandler<HostEvent> for Host {
             attention_inbox: mtty_ui::attention::Inbox::default(),
             attention_open: false,
             command_history: None,
+            data_preview: None,
+            data_preview_epoch: 0,
             host_book: Default::default(),
             host_book_error: None,
             hosts_view: None,
