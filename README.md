@@ -24,6 +24,8 @@ agents in one fast, native window. It is built on three pillars:
 | **Editor** | Native panes, tree-sitter syntax highlighting, large-file view mode, multiple cursors, regex find/replace, Markdown and Mermaid preview, LSP, opt-in vim, folding and outline |
 | **Agent workspace** | Agent-state badges and notifications, prompt queue, per-task git worktrees, undoable inline edit proposals, ACP agents, context sharing and the MTP control plane |
 
+When miao is installed, the cat button at the top right starts `miao` in the current terminal, preserving its working directory and environment. It hides while that terminal runs miao and returns when the shell is ready again.
+
 What ties them together: Rust and GPU rendering held to a performance gate;
 terminal, editor, remote hosts and agents in the same tabs and splits; no
 account, no forced cloud — mtty hosts the agents you choose and never calls a
