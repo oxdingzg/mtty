@@ -1604,35 +1604,48 @@ mod tests {
 
     #[test]
     fn closing_idle_pipe_releases_reader_without_waking_ui() {
-        struct IdleReader(mpsc::Sender<()>);
+        struct IdleReader {
+            started: Option<mpsc::Sender<()>>,
+            dropped: mpsc::Sender<()>,
+        }
         impl Read for IdleReader {
             fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                if let Some(started) = self.started.take() {
+                    let _ = started.send(());
+                }
                 Err(std::io::ErrorKind::TimedOut.into())
             }
         }
         impl Drop for IdleReader {
             fn drop(&mut self) {
-                let _ = self.0.send(());
+                let _ = self.dropped.send(());
             }
         }
         let (dropped_tx, dropped_rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::channel();
+        let timeout = std::time::Duration::from_secs(10);
         let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = wakes.clone();
         let term = Terminal::from_pipe(
             10,
             5,
             10,
-            IdleReader(dropped_tx),
+            IdleReader {
+                started: Some(started_tx),
+                dropped: dropped_tx,
+            },
             Box::new(std::io::sink()),
             std::sync::Arc::new(move || {
                 count.fetch_add(1, Ordering::Relaxed);
             }),
         );
-        thread::sleep(std::time::Duration::from_millis(30));
+        started_rx
+            .recv_timeout(timeout)
+            .expect("idle reader starts");
         assert_eq!(wakes.load(Ordering::Relaxed), 0);
         drop(term);
         dropped_rx
-            .recv_timeout(std::time::Duration::from_secs(2))
+            .recv_timeout(timeout)
             .expect("idle reader closes with its pane");
         assert_eq!(wakes.load(Ordering::Relaxed), 0);
     }
