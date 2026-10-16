@@ -163,12 +163,12 @@ impl State {
                     if pending { ui.label(t(lang, "Running in its own terminal…", "正在独立终端中运行…")); }
                 });
                 ui.label(t(lang, "Task completion is separate from verification. Results refer to the revision that was checked.", "任务完成与验证通过分别展示。验证结果关联运行时的改动版本。"));
-                for check in data.state.checks.iter().rev().take(5) {
+                for (index, check) in data.state.checks.iter().enumerate().rev().take(5) {
                     let result = match check.exit { Some(0) => t(lang, "Passed", "通过"), Some(_) => t(lang, "Failed", "失败"), None => t(lang, "No captured exit / cancelled", "未捕获退出码／已取消") };
                     let stale = if check.revision != data.snapshot.fingerprint { t(lang, " · older revision", " · 较早版本") } else { "" };
                     let exit = check.exit.map_or_else(|| "?".to_owned(), |code| code.to_string());
-                    ui.collapsing(format!("{result}{stale} · {} · exit {exit}", check.command), |ui| {
-                        egui::ScrollArea::both().id_salt(("check-output", check.finished_at)).max_height(100.0).show(ui, |ui| { ui.label(egui::RichText::new(&check.output).monospace()); });
+                    egui::CollapsingHeader::new(format!("{result}{stale} · {} · exit {exit}", check.command)).id_salt(("review-check", index)).show(ui, |ui| {
+                        egui::ScrollArea::both().id_salt(("check-output", index)).max_height(100.0).show(ui, |ui| { ui.label(egui::RichText::new(&check.output).monospace()); });
                     });
                 }
                 if !data.state.comments.is_empty() { ui.label(format!("{} {}", data.state.comments.len(), t(lang, "feedback messages recorded", "条反馈已记录"))); }

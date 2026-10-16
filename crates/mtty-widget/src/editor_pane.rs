@@ -328,6 +328,8 @@ pub struct EditorPane {
     /// Text-area size in cells, from the last layout.
     pub rows: usize,
     pub cols: usize,
+    /// Programmatic navigation can arrive before the first real layout.
+    pending_horizontal_reveal: bool,
     /// A drag selection is in progress (the anchor stays put).
     pub dragging: bool,
     /// Closing with unsaved changes was asked once; the next close discards.
@@ -621,6 +623,7 @@ impl EditorPane {
             scroll_col: 0,
             rows: 1,
             cols: 1,
+            pending_horizontal_reveal: false,
             dragging: false,
             close_armed: false,
             proposal: None,
@@ -1129,6 +1132,10 @@ impl EditorPane {
     pub fn resize(&mut self, cols: usize, rows: usize) {
         self.cols = cols.saturating_sub(self.gutter()).max(1);
         self.rows = rows.max(1);
+        if self.pending_horizontal_reveal {
+            self.pending_horizontal_reveal = false;
+            self.reveal_cursor();
+        }
     }
 
     /// Scroll so the primary caret is on screen.
@@ -1166,6 +1173,10 @@ impl EditorPane {
             }
         }
         self.normalize_scroll();
+        if self.cols == 1 && self.rows == 1 {
+            self.pending_horizontal_reveal = true;
+            return;
+        }
         let col = {
             let rope = self.doc.rope();
             let head = self.doc.selection().primary().head;
@@ -1911,6 +1922,31 @@ pub fn parse_line_target(input: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_navigation_waits_for_real_horizontal_geometry() {
+        let mut pane = EditorPane::with_doc(
+            "navigation".into(),
+            "sample.rs".into(),
+            Document::from_bytes(b"fn target() {}\n").unwrap(),
+        );
+        pane.doc.set_selection(mtty_editor::Selection::cursor(3));
+        pane.reveal_cursor();
+        assert_eq!(pane.scroll_col, 0);
+        pane.resize(80, 24);
+        assert_eq!(pane.scroll_col, 0);
+        let text = "x".repeat(200);
+        let mut pane = EditorPane::with_doc(
+            "wide".into(),
+            "wide.txt".into(),
+            Document::from_bytes(text.as_bytes()).unwrap(),
+        );
+        pane.doc.set_selection(mtty_editor::Selection::cursor(150));
+        pane.reveal_cursor();
+        assert_eq!(pane.scroll_col, 0);
+        pane.resize(80, 24);
+        assert!(pane.scroll_col > 0);
+    }
 
     fn view_of(lines: usize) -> (EditorPane, PathBuf, String) {
         let text: String = (0..lines).map(|i| format!("line {i}\n")).collect();
