@@ -303,7 +303,9 @@ struct RawConfig {
     editor_vim: Option<bool>,
     #[serde(rename = "mermaid-command")]
     mermaid_command: Option<String>,
+    #[serde(rename = "browser-command")]
     browser_command: Option<String>,
+    #[serde(rename = "browser-url")]
     browser_url: Option<String>,
     graphics: Option<bool>,
     #[serde(rename = "remote-listen")]
@@ -1185,6 +1187,16 @@ mod tests {
         let off = Config::from_toml("[lsp]\nenabled = false\n").unwrap();
         assert!(off.lsp.disabled);
         assert_eq!(Config::from_toml("").unwrap().lsp, LspConfig::default());
+    }
+
+    #[test]
+    fn browser_defaults_use_the_documented_config_keys() {
+        let config=Config::from_toml("browser-url=\"http://localhost:4321\"\nbrowser-command=\"tool ${url} ${screenshot}\"\n").unwrap();
+        assert_eq!(config.browser_url, "http://localhost:4321");
+        assert_eq!(
+            config.browser_command.as_deref(),
+            Some("tool ${url} ${screenshot}")
+        );
     }
 
     #[test]
