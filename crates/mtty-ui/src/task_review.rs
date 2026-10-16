@@ -77,6 +77,18 @@ pub struct Verification {
     pub output: String,
     pub revision: u64,
     pub finished_at: u64,
+    #[serde(default)]
+    pub browser: Option<crate::browser::Evidence>,
+}
+
+impl Verification {
+    pub fn passed(&self) -> bool {
+        self.exit == Some(0)
+            && self
+                .browser
+                .as_ref()
+                .map_or(true, |evidence| evidence.valid)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -474,6 +486,7 @@ mod tests {
             output: "failed".into(),
             revision: current.snapshot.fingerprint,
             finished_at: 1,
+            browser: None,
         };
         let checked = record_check(&task, check).unwrap();
         assert_eq!(checked.state.checks[0].exit, Some(1));

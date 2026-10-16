@@ -303,6 +303,10 @@ struct RawConfig {
     editor_vim: Option<bool>,
     #[serde(rename = "mermaid-command")]
     mermaid_command: Option<String>,
+    #[serde(rename = "browser-command")]
+    browser_command: Option<String>,
+    #[serde(rename = "browser-url")]
+    browser_url: Option<String>,
     graphics: Option<bool>,
     #[serde(rename = "remote-listen")]
     remote_listen: Option<String>,
@@ -432,6 +436,8 @@ pub struct Config {
     /// External Mermaid renderer (e.g. `mmdc`) for `mermaid` code blocks.
     /// `None` (default) draws the built-in `graph`/`flowchart` subset instead.
     pub mermaid_command: Option<String>,
+    pub browser_command: Option<String>,
+    pub browser_url: String,
     /// Inline terminal graphics (Sixel / Kitty / iTerm2). On by default.
     pub graphics: bool,
     /// `addr:port` to serve the MTP control plane over TCP (remote access).
@@ -668,6 +674,8 @@ impl Default for Config {
             editor: None,
             editor_vim: false,
             mermaid_command: None,
+            browser_command: None,
+            browser_url: "http://127.0.0.1:3000".into(),
             graphics: true,
             remote_listen: None,
             quick_terminal_hotkey: None,
@@ -1088,6 +1096,12 @@ impl Config {
         if let Some(vim) = raw.editor_vim {
             cfg.editor_vim = vim;
         }
+        cfg.browser_command = raw
+            .browser_command
+            .filter(|command| !command.trim().is_empty());
+        if let Some(url) = raw.browser_url {
+            cfg.browser_url = url;
+        }
         if let Some(cmd) = raw.mermaid_command {
             let cmd = cmd.trim();
             if !cmd.is_empty() {
@@ -1200,6 +1214,16 @@ mod tests {
         let off = Config::from_toml("[lsp]\nenabled = false\n").unwrap();
         assert!(off.lsp.disabled);
         assert_eq!(Config::from_toml("").unwrap().lsp, LspConfig::default());
+    }
+
+    #[test]
+    fn browser_defaults_use_the_documented_config_keys() {
+        let config=Config::from_toml("browser-url=\"http://localhost:4321\"\nbrowser-command=\"tool ${url} ${screenshot}\"\n").unwrap();
+        assert_eq!(config.browser_url, "http://localhost:4321");
+        assert_eq!(
+            config.browser_command.as_deref(),
+            Some("tool ${url} ${screenshot}")
+        );
     }
 
     #[test]

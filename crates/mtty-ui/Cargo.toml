@@ -17,6 +17,7 @@ mtty-platform = { path = "../mtty-platform" }
 egui = "0.30"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+png = "0.17"
 minisign-verify = "0.3.0"
 unicode-width = "0.2"
 # Serial consoles (BSD-2-Clause OR Apache-2.0). ADR 0037. Ports are opened by

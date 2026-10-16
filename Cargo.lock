@@ -3098,6 +3098,7 @@ dependencies = [
  "mtty-mtp",
  "mtty-platform",
  "mtty-render",
+ "png 0.17.16",
  "serde",
  "serde_json",
  "serial2",
