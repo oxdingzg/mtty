@@ -288,7 +288,13 @@ fn a_hosted_terminal_survives_the_app() {
     // Output made while the app is away.
     term.write(b"ping -n 3 127.0.0.1 >nul & echo two-here\r");
     pump_until(&mut term, "the command", |t| t.contains("ping -n 3"));
-    let snapshot: HostSnapshot = term.host_snapshot(1000).expect("a snapshot");
+    let snapshot: HostSnapshot = term.host_snapshot(1000).unwrap_or_else(|| {
+        panic!(
+            "a snapshot (hosted={}):\n{}",
+            term.is_hosted(),
+            screen_text(&term)
+        )
+    });
     let (id, socket) = {
         let (id, socket) = term.host_id().unwrap();
         (id.to_string(), socket.to_path_buf())
