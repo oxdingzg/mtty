@@ -180,7 +180,12 @@ jobs:
           github.ref == 'refs/heads/main' &&
           (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GITHUB_TOKEN-made PRs never run pull_request workflows: the run
+          # parks in "action_required" and the required ci-gate never reports,
+          # so the queued auto-merge waits forever (issue #205). The refresh
+          # needs a real identity: OPS_TOKEN, a fine-grained PAT limited to
+          # this repository with contents:write + pull_requests:write.
+          GH_TOKEN: ${{ secrets.OPS_TOKEN }}
         run: |
           set -e
           if [ ! -f target/perf-measured.json ]; then
@@ -192,6 +197,10 @@ jobs:
             echo "baseline unchanged"
             exit 0
           fi
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::OPS_TOKEN is not configured; cannot open the baseline pull request"
+            exit 1
+          fi
           # A newer measurement supersedes any open baseline PR; without this
           # every schedule run leaves another branch behind.
           for old in $(gh pr list --base main --json headRefName,number \
@@ -200,9 +209,15 @@ jobs:
           done
           # main is protected: a direct push is rejected ("Changes must be made
           # through a pull request"), so land the refresh through a PR instead.
+          # Pushing and opening the PR as the token identity makes the
+          # pull_request run start on its own; once ci-gate reports green the
+          # queued auto-merge lands it with no manual step.
           branch="chore/perf-baseline-${GITHUB_RUN_ID}"
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          ops_login="$(gh api user -q .login)"
+          git config user.name  "$ops_login"
+          git config user.email "$ops_login@users.noreply.github.com"
+          git config --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git checkout -b "$branch"
           git add benches/perf-baseline.json
           git commit -m "chore(perf): refresh the CI baseline from the ${{ github.event_name }} run"
@@ -210,11 +225,7 @@ jobs:
           gh pr create --base main --head "$branch" \
             --title "chore(perf): refresh the CI baseline" \
             --body "Automated baseline refresh from the ${{ github.event_name }} run (${GITHUB_RUN_ID})."
-          # GITHUB_TOKEN-created PRs do not trigger pull_request workflows.
-          # Explicit dispatch does, and the required gate prevents an unchecked merge.
-          gh workflow run ci.yml --ref "$branch"
-          pr_number="$(gh pr view "$branch" --json number -q .number)"
-          gh pr merge "$pr_number" --squash --auto --delete-branch
+          gh pr merge --squash --auto --delete-branch
 
   packaging:
     needs: changes
