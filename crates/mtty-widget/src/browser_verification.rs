@@ -166,7 +166,7 @@ impl State {
                         None=>{ui.label(t(lang,"Running in a dedicated terminal…","正在独立终端中运行…"));}
                         Some(Err(error))=>{ui.colored_label(chrome_rgb(self.theme.chrome().negative),error);}
                         Some(Ok(report))=>{
-                            ui.label(format!("{} {:?} · PNG {} · {}×{}",t(lang,"Automation exit","自动化退出码"),report.exit,report.evidence.valid,report.evidence.width,report.evidence.height));
+                            ui.label(format!("{} {} · PNG {} · {}×{}",t(lang,"Automation exit","自动化退出码"),report.exit.map_or_else(||"?".to_owned(),|exit|exit.to_string()),report.evidence.valid,report.evidence.width,report.evidence.height));
                             ui.label(&report.evidence.screenshot);
                             if let Some(error)=&report.evidence.error{ui.label(error);}
                             ui.horizontal(|ui|{

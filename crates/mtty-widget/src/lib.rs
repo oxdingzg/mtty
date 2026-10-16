@@ -43,6 +43,7 @@ mod acp_browser;
 mod attention;
 mod browser_verification;
 mod command_history;
+mod data_preview;
 mod drag;
 mod editor_pane;
 mod live_markdown;
@@ -1152,6 +1153,10 @@ enum JobDone {
         id: u64,
         result: Result<mtty_ui::browser::Report, String>,
     },
+    DataPreviewLoaded {
+        epoch: u64,
+        result: Result<mtty_ui::data_preview::Preview, String>,
+    },
     /// Bytes read over ssh. `id` is `Some` when the pane already exists
     /// (session restore); `None` opens a new editor pane (remote dialog).
     RemoteRead {
@@ -2043,6 +2048,8 @@ struct State {
     browser_epoch: u64,
     browser_command: Option<String>,
     browser_url: String,
+    data_preview: Option<data_preview::View>,
+    data_preview_epoch: u64,
     /// Saved SSH hosts (B3.1). `host_book_error` blocks saving over a
     /// hosts.toml that could not be read.
     host_book: mtty_config::hosts::HostBook,
@@ -4672,6 +4679,7 @@ impl State {
         self.attention_window(ctx);
         self.command_history_window(ctx);
         self.browser_verification_window(ctx);
+        self.data_preview_window(ctx);
         self.hosts_window(ctx);
         self.sftp_window(ctx);
         self.snippets_window(ctx);
@@ -5561,6 +5569,7 @@ enum Cmd {
     CommandHistory,
     BrowserVerification,
     RunBrowserVerification,
+    DataPreview,
     /// The active pane's last command output (OSC 133, B2.3).
     CopyLastOutput,
     SendLastOutput,
@@ -5719,6 +5728,10 @@ impl State {
             (
                 Cmd::CommandHistory,
                 t(l, "Command Output History…", "命令输出历史…"),
+            ),
+            (
+                Cmd::DataPreview,
+                t(l, "Preview JSON / CSV / Log…", "预览 JSON / CSV / 日志…"),
             ),
             (
                 Cmd::NextAttention,
@@ -6196,6 +6209,7 @@ impl State {
             }
             Cmd::BrowserVerification => self.open_browser_verification(false),
             Cmd::RunBrowserVerification => self.open_browser_verification(true),
+            Cmd::DataPreview => self.open_data_preview(None),
             Cmd::CommandHistory => {
                 if let Some(pane) = self.active_pane_id() {
                     self.command_history = Some(command_history::View::new(pane));
@@ -14950,6 +14964,22 @@ impl State {
     fn finish_job(&mut self, done: JobDone) {
         use mtty_ui::i18n::t;
         match done {
+            JobDone::DataPreviewLoaded { epoch, result } => {
+                if let Some(view) = self
+                    .data_preview
+                    .as_mut()
+                    .filter(|view| view.epoch == epoch)
+                {
+                    view.loading = false;
+                    match result {
+                        Ok(data) => {
+                            view.data = Some(data);
+                            view.rebuild();
+                        }
+                        Err(error) => view.error = Some(error),
+                    }
+                }
+            }
             JobDone::BrowserContextLoaded { epoch, run, result } => {
                 if let Some(view) = self
                     .browser_view
@@ -16352,6 +16382,8 @@ impl ApplicationHandler<HostEvent> for Host {
             browser_epoch: 0,
             browser_command: cfg.browser_command.clone(),
             browser_url: cfg.browser_url.clone(),
+            data_preview: None,
+            data_preview_epoch: 0,
             host_book: Default::default(),
             host_book_error: None,
             hosts_view: None,
