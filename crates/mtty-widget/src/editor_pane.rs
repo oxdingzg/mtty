@@ -146,6 +146,14 @@ pub struct PaneDiagnostic {
     pub message: String,
 }
 
+#[derive(Default)]
+pub struct RemoteLspState {
+    pub path: Option<String>,
+    pub root: Option<String>,
+    pub pending: bool,
+    pub error: Option<String>,
+}
+
 /// Colours the pane draws with (taken from the terminal theme).
 #[derive(Clone, Copy)]
 pub struct Palette {
@@ -318,6 +326,7 @@ pub struct EditorPane {
     pub path: PathBuf,
     /// `Some` when this pane edits a file over ssh.
     pub remote: Option<RemoteRef>,
+    pub remote_lsp: RemoteLspState,
     /// A background remote save is running.
     pub saving: bool,
     /// Close once the running remote save succeeds (vim `:wq`).
@@ -369,6 +378,12 @@ pub struct EditorPane {
 const FLASH: Duration = Duration::from_millis(1500);
 
 impl EditorPane {
+    pub fn lsp_key(&self) -> PathBuf {
+        self.remote
+            .as_ref()
+            .map(|remote| mtty_lsp::remote::document_key(&remote.dest, &remote.path))
+            .unwrap_or_else(|| self.path.clone())
+    }
     /// Open `path` (UTF-8 text) in a pane: in view mode above
     /// [`MAX_PANE_BYTES`].
     pub fn open(id: String, path: &Path) -> Result<Self, String> {
@@ -615,6 +630,7 @@ impl EditorPane {
             doc,
             path,
             remote: None,
+            remote_lsp: Default::default(),
             saving: false,
             quit_after_save: false,
             scroll_line: 0,

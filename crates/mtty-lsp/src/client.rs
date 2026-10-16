@@ -5,9 +5,10 @@
 //! go out, in order, right after `initialized`.
 
 use std::collections::VecDeque;
-use std::io::{BufReader, BufWriter};
+use std::io::{BufReader, BufWriter, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
@@ -73,6 +74,7 @@ impl Capabilities {
 
 enum Out {
     Message(Value),
+    Change(String),
     /// `initialize` was answered: send `initialized`, then what was held.
     Ready,
     Shutdown,
@@ -83,6 +85,8 @@ pub struct Client {
     incoming: Arc<Mutex<VecDeque<Incoming>>>,
     caps: Arc<Mutex<Option<Capabilities>>>,
     child: Arc<Mutex<Option<Child>>>,
+    closed: Arc<AtomicBool>,
+    changes: Arc<Mutex<std::collections::HashMap<String, Value>>>,
     next_id: i64,
 }
 
@@ -91,23 +95,54 @@ impl Client {
     /// `root`. Returns at once; failure to start arrives as
     /// [`Incoming::Failed`].
     pub fn start(command: Vec<String>, root: &Path, waker: Waker) -> Client {
+        Self::start_with(
+            command,
+            Some(root.to_path_buf()),
+            initialize_request(root),
+            waker,
+        )
+    }
+
+    pub fn start_remote(command: Vec<String>, root: &Path, waker: Waker) -> Client {
+        let mut initialize = initialize_request(root);
+        let root = root.to_string_lossy();
+        let uri = crate::remote::file_uri(&root);
+        initialize["params"]["processId"] = Value::Null;
+        initialize["params"]["rootUri"] = json!(uri);
+        initialize["params"]["rootPath"] = json!(root);
+        initialize["params"]["workspaceFolders"] =
+            json!([{"uri":uri,"name":root.rsplit('/').next().unwrap_or("")}]);
+        Self::start_with(command, None, initialize, waker)
+    }
+
+    fn start_with(
+        command: Vec<String>,
+        root: Option<PathBuf>,
+        initialize: Value,
+        waker: Waker,
+    ) -> Client {
         let (out, rx) = channel();
         let incoming = Arc::new(Mutex::new(VecDeque::new()));
         let caps = Arc::new(Mutex::new(None));
         let child = Arc::new(Mutex::new(None));
+        let closed = Arc::new(AtomicBool::new(false));
+        let changes = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let client = Client {
             out: out.clone(),
             incoming: incoming.clone(),
             caps: caps.clone(),
             child: child.clone(),
+            closed: closed.clone(),
+            changes: changes.clone(),
             next_id: 1,
         };
-        let _ = out.send(Out::Message(initialize_request(root)));
-        let root = root.to_path_buf();
+        let _ = out.send(Out::Message(initialize));
         let _ = std::thread::Builder::new()
             .name("mtty-lsp".into())
             .spawn(move || {
-                run(command, root, rx, out, incoming, caps, child, waker);
+                run(
+                    command, root, rx, out, incoming, caps, child, waker, closed, changes,
+                );
             });
         client
     }
@@ -118,6 +153,25 @@ impl Client {
     }
 
     pub fn notify(&mut self, method: &str, params: Value) {
+        if method == "textDocument/didChange" {
+            if let Some(uri) = params
+                .pointer("/textDocument/uri")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            {
+                let message = json!({"jsonrpc":"2.0","method":method,"params":params});
+                let first = self
+                    .changes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(uri.clone(), message)
+                    .is_none();
+                if first {
+                    let _ = self.out.send(Out::Change(uri));
+                }
+                return;
+            }
+        }
         let _ = self.out.send(Out::Message(
             json!({ "jsonrpc": "2.0", "method": method, "params": params }),
         ));
@@ -148,23 +202,42 @@ impl Client {
     pub fn shutdown(&mut self) {
         let _ = self.out.send(Out::Shutdown);
     }
+
+    pub fn stop(&mut self) {
+        self.closed.store(true, Ordering::Release);
+        let _ = self.out.send(Out::Shutdown);
+        if let Some(child) = self.child.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            std::thread::spawn(move || kill_owned(child));
+        }
+    }
 }
 
 impl Drop for Client {
     fn drop(&mut self) {
+        self.closed.store(true, Ordering::Release);
         let _ = self.out.send(Out::Shutdown);
-        if let Some(mut child) = self.child.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            // Give `exit` a moment, then make sure.
-            for _ in 0..20 {
-                if matches!(child.try_wait(), Ok(Some(_))) {
-                    return;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(child) = self.child.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            kill_owned(child);
         }
     }
+}
+
+fn kill_owned(mut child: Child) {
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+    }
+    #[cfg(windows)]
+    {
+        let _ = mtty_platform::background_command("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn initialize_request(root: &Path) -> Value {
@@ -208,13 +281,15 @@ fn initialize_request(root: &Path) -> Value {
 #[allow(clippy::too_many_arguments)]
 fn run(
     command: Vec<String>,
-    root: PathBuf,
+    root: Option<PathBuf>,
     rx: Receiver<Out>,
     out: Sender<Out>,
     incoming: Arc<Mutex<VecDeque<Incoming>>>,
     caps: Arc<Mutex<Option<Capabilities>>>,
     child_slot: Arc<Mutex<Option<Child>>>,
     waker: Waker,
+    closed: Arc<AtomicBool>,
+    changes: Arc<Mutex<std::collections::HashMap<String, Value>>>,
 ) {
     let push = |item: Incoming| {
         incoming
@@ -223,6 +298,9 @@ fn run(
             .push_back(item);
         waker();
     };
+    if closed.load(Ordering::Acquire) {
+        return;
+    }
     let Some((program, args)) = command.split_first() else {
         push(Incoming::Failed("no command".into()));
         return;
@@ -231,12 +309,22 @@ fn run(
     let resolved = crate::env::which(program, &path).unwrap_or_else(|| PathBuf::from(program));
     let mut cmd = mtty_platform::background_command(&resolved);
     cmd.args(args)
-        .current_dir(&root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::piped());
+    if let Some(root) = &root {
+        cmd.current_dir(root);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     if let Some(path) = &path {
         cmd.env("PATH", path);
+    }
+    if closed.load(Ordering::Acquire) {
+        return;
     }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -249,7 +337,36 @@ fn run(
         push(Incoming::Failed(format!("{program}: no pipes")));
         return;
     };
-    *child_slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(child);
+    let stderr = Arc::new(Mutex::new(String::new()));
+    if let Some(mut pipe) = child.stderr.take() {
+        let log = stderr.clone();
+        std::thread::spawn(move || {
+            let mut bytes = [0; 1024];
+            while let Ok(count) = pipe.read(&mut bytes) {
+                if count == 0 {
+                    break;
+                }
+                let mut text = log.lock().unwrap_or_else(|e| e.into_inner());
+                text.push_str(&String::from_utf8_lossy(&bytes[..count]));
+                if text.len() > 4096 {
+                    let mut at = text.len() - 4096;
+                    while !text.is_char_boundary(at) {
+                        at += 1;
+                    }
+                    text.drain(..at);
+                }
+            }
+        });
+    }
+    {
+        let mut slot = child_slot.lock().unwrap_or_else(|e| e.into_inner());
+        if closed.load(Ordering::Acquire) {
+            drop(slot);
+            kill_owned(child);
+            return;
+        }
+        *slot = Some(child);
+    }
 
     // Reader: responses and notifications to the queue; requests from the
     // server answered here.
@@ -257,10 +374,14 @@ fn run(
     let reader_waker = waker.clone();
     let reader_incoming = incoming.clone();
     let program_name = program.clone();
+    let reader_closed = closed.clone();
     let _ = std::thread::Builder::new()
         .name("mtty-lsp-read".into())
         .spawn(move || {
             let push = |item: Incoming| {
+                if reader_closed.load(Ordering::Acquire) {
+                    return;
+                }
                 reader_incoming
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -272,7 +393,8 @@ fn run(
                 let msg = match rpc::read_message(&mut reader) {
                     Ok(Some(m)) => m,
                     Ok(None) => {
-                        push(Incoming::Failed(format!("{program_name} exited")));
+                        let log = stderr.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                        push(Incoming::Failed(format!("{program_name} exited\n{log}")));
                         return;
                     }
                     Err(e) => {
@@ -308,7 +430,11 @@ fn run(
                                 );
                                 *caps.lock().unwrap_or_else(|e| e.into_inner()) = Some(c);
                             }
-                            let _ = reader_out.send(Out::Ready);
+                            let _ = reader_out.send(if result.is_ok() {
+                                Out::Ready
+                            } else {
+                                Out::Shutdown
+                            });
                             push(match result {
                                 Ok(_) => Incoming::Ready,
                                 Err(e) => Incoming::Failed(format!("initialize: {e}")),
@@ -327,6 +453,9 @@ fn run(
     let mut ready = false;
     let mut held = Vec::new();
     while let Ok(item) = rx.recv() {
+        if closed.load(Ordering::Acquire) && !matches!(item, Out::Shutdown) {
+            continue;
+        }
         let result = match item {
             Out::Message(msg) => {
                 let is_init = msg.get("id") == Some(&json!(0));
@@ -335,7 +464,22 @@ fn run(
                 if ready || is_init || is_reply {
                     rpc::write_message(&mut writer, &msg)
                 } else {
-                    held.push(msg);
+                    held.push(Out::Message(msg));
+                    Ok(())
+                }
+            }
+            Out::Change(uri) => {
+                if ready {
+                    let message = changes
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&uri);
+                    match message {
+                        Some(message) => rpc::write_message(&mut writer, &message),
+                        None => Ok(()),
+                    }
+                } else {
+                    held.push(Out::Change(uri));
                     Ok(())
                 }
             }
@@ -345,9 +489,19 @@ fn run(
                     &mut writer,
                     &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
                 );
-                for msg in held.drain(..) {
+                for item in held.drain(..) {
                     if r.is_ok() {
-                        r = rpc::write_message(&mut writer, &msg);
+                        let message = match item {
+                            Out::Message(message) => Some(message),
+                            Out::Change(uri) => changes
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .remove(&uri),
+                            _ => None,
+                        };
+                        if let Some(message) = message {
+                            r = rpc::write_message(&mut writer, &message);
+                        }
                     }
                 }
                 r
