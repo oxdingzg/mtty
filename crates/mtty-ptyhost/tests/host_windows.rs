@@ -271,11 +271,16 @@ fn a_hosted_terminal_survives_the_app() {
         24,
         1000,
         Some(std::env::temp_dir()),
-        &[],
+        &[("PROMPT".into(), "mtty-test-ready> ".into())],
         waker.clone(),
     )
     .expect("host started");
     assert!(term.is_hosted());
+    // Cmd can flush startup console input. This test checks detach/reattach,
+    // so begin the interaction after its first prompt rather than racing init.
+    pump_until(&mut term, "the initial cmd prompt", |text| {
+        text.contains("mtty-test-ready>")
+    });
     // The long prompt wraps the echoed command; its output is a line alone.
     let printed = |word: &'static str| move |t: &str| t.lines().any(|l| l.trim() == word);
     term.write(b"echo one-here\r");
