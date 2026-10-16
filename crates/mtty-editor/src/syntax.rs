@@ -35,8 +35,10 @@ pub const MAX_HIGHLIGHT_BYTES: usize = 8 << 20;
 /// Documents up to this size are reparsed on the caller's thread: a
 /// keystroke's reparse grows with the file (about 4 ms per MB of Rust,
 /// tree-sitter re-walking the top-level items after the edit), and stays
-/// within a frame here.
-pub const SYNC_PARSE_BYTES: usize = 512 << 10;
+/// within a frame here. Windows needs a smaller boundary: reparsing 512 KiB
+/// exceeded the 16 ms frame budget on real hardware. Larger files still get
+/// full highlighting, with parsing moved off the UI thread.
+pub const SYNC_PARSE_BYTES: usize = if cfg!(windows) { 256 << 10 } else { 512 << 10 };
 
 /// Sublime syntaxes (the fallback) parse line by line from checkpoints on the
 /// caller's thread; a jump to the end of the file parses everything before

@@ -384,6 +384,13 @@ fn read_into_channel(
                 }
             }
         }
+        // The final payload wake can be consumed before this worker observes
+        // EOF. Publish disconnection before waking again so an otherwise idle
+        // UI can observe the session ending without polling or extra input.
+        drop(tx);
+        if !reader_stop.load(Ordering::Acquire) {
+            waker();
+        }
     });
     (rx, stop)
 }
@@ -751,6 +758,7 @@ impl Terminal {
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
+                    changed |= !self.exited;
                     self.exited = true;
                     break;
                 }
@@ -1596,35 +1604,48 @@ mod tests {
 
     #[test]
     fn closing_idle_pipe_releases_reader_without_waking_ui() {
-        struct IdleReader(mpsc::Sender<()>);
+        struct IdleReader {
+            started: Option<mpsc::Sender<()>>,
+            dropped: mpsc::Sender<()>,
+        }
         impl Read for IdleReader {
             fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                if let Some(started) = self.started.take() {
+                    let _ = started.send(());
+                }
                 Err(std::io::ErrorKind::TimedOut.into())
             }
         }
         impl Drop for IdleReader {
             fn drop(&mut self) {
-                let _ = self.0.send(());
+                let _ = self.dropped.send(());
             }
         }
         let (dropped_tx, dropped_rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::channel();
+        let timeout = std::time::Duration::from_secs(10);
         let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count = wakes.clone();
         let term = Terminal::from_pipe(
             10,
             5,
             10,
-            IdleReader(dropped_tx),
+            IdleReader {
+                started: Some(started_tx),
+                dropped: dropped_tx,
+            },
             Box::new(std::io::sink()),
             std::sync::Arc::new(move || {
                 count.fetch_add(1, Ordering::Relaxed);
             }),
         );
-        thread::sleep(std::time::Duration::from_millis(30));
+        started_rx
+            .recv_timeout(timeout)
+            .expect("idle reader starts");
         assert_eq!(wakes.load(Ordering::Relaxed), 0);
         drop(term);
         dropped_rx
-            .recv_timeout(std::time::Duration::from_secs(2))
+            .recv_timeout(timeout)
             .expect("idle reader closes with its pane");
         assert_eq!(wakes.load(Ordering::Relaxed), 0);
     }
@@ -1754,25 +1775,49 @@ mod tests {
     /// sends and reports EOF as exit (ADR 0037).
     #[test]
     fn a_pipe_terminal_reads_and_writes_without_a_child() {
-        let waker: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(|| {});
+        let (wake, events) = std::sync::mpsc::channel();
+        let waker: std::sync::Arc<dyn Fn() + Send + Sync> = std::sync::Arc::new(move || {
+            let _ = wake.send(());
+        });
         let out = SharedBuf::default();
         let writer: Box<dyn Write + Send> = Box::new(out.clone());
         let reader = std::io::Cursor::new(b"\x1b[31mhi\x1b[0m\r\n".to_vec());
         let mut term = Terminal::from_pipe(20, 5, 100, reader, writer, waker);
         assert_eq!(term.pid(), None);
         assert_eq!(term.foreground_command(), None);
-        for _ in 0..200 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !term.exited() {
+            events
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                .expect("pipe payload/EOF wake");
             term.process_pending();
-            if term.exited() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
         }
         assert!(term.exited(), "a closed pipe ends the session");
         assert_eq!(term.screen().line_text(0).trim_end(), "hi");
         term.write(b"ping");
         assert_eq!(&*out.0.lock().unwrap(), b"ping");
         term.resize(6, 30);
+    }
+
+    #[test]
+    fn empty_pipe_eof_wakes_and_changes_the_session_without_input() {
+        let (wake, events) = std::sync::mpsc::channel();
+        let mut term = Terminal::from_pipe(
+            20,
+            5,
+            100,
+            std::io::Cursor::new(Vec::<u8>::new()),
+            Box::new(std::io::sink()),
+            std::sync::Arc::new(move || {
+                let _ = wake.send(());
+            }),
+        );
+        events
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("EOF must wake an idle consumer");
+        assert!(term.process_pending());
+        assert!(term.exited());
+        assert!(!term.process_pending());
     }
 
     #[test]

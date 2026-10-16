@@ -102,7 +102,7 @@ fn highlighting_the_largest_synchronously_parsed_file_stays_interactive() {
     let mut syntax = Syntax::for_file(std::path::Path::new("big.rs"), doc.rope()).unwrap();
     assert!(!syntax.parsing(), "parsed on this thread");
     check(
-        "first parse of 512 KB",
+        "first parse at the synchronous size limit",
         t.elapsed().as_secs_f64() * 1e3,
         1000.0,
     );
