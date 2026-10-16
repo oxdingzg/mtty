@@ -18,7 +18,14 @@ pub struct Diagnostic {
 
 /// `textDocument/publishDiagnostics`: the file and its diagnostics.
 pub fn diagnostics(params: &Value) -> Option<(PathBuf, Vec<Diagnostic>)> {
-    let path = uri_to_path(params.get("uri")?.as_str()?)?;
+    diagnostics_using(params, uri_to_path)
+}
+
+pub fn diagnostics_using(
+    params: &Value,
+    decode: impl Fn(&str) -> Option<PathBuf>,
+) -> Option<(PathBuf, Vec<Diagnostic>)> {
+    let path = decode(params.get("uri")?.as_str()?)?;
     let list = params
         .get("diagnostics")?
         .as_array()?
@@ -69,15 +76,22 @@ pub fn hover_text(result: &Value) -> Option<String> {
 /// Where a definition is: file and range, for each answer (a Location, a
 /// list of them, or LocationLinks).
 pub fn locations(result: &Value) -> Vec<(PathBuf, LspRange)> {
+    locations_using(result, uri_to_path)
+}
+
+pub fn locations_using(
+    result: &Value,
+    decode: impl Fn(&str) -> Option<PathBuf>,
+) -> Vec<(PathBuf, LspRange)> {
     let one = |v: &Value| -> Option<(PathBuf, LspRange)> {
         if let Some(uri) = v.get("targetUri") {
             let range = v
                 .get("targetSelectionRange")
                 .or_else(|| v.get("targetRange"))?;
-            return Some((uri_to_path(uri.as_str()?)?, LspRange::from_json(range)?));
+            return Some((decode(uri.as_str()?)?, LspRange::from_json(range)?));
         }
         Some((
-            uri_to_path(v.get("uri")?.as_str()?)?,
+            decode(v.get("uri")?.as_str()?)?,
             LspRange::from_json(v.get("range")?)?,
         ))
     };

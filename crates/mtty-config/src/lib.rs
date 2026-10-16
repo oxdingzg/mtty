@@ -465,6 +465,14 @@ pub struct Config {
 pub struct LspConfig {
     pub disabled: bool,
     pub servers: std::collections::BTreeMap<String, LspServerConfig>,
+    pub remotes: std::collections::BTreeMap<String, LspRemoteConfig>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LspRemoteConfig {
+    pub root: String,
+    pub disabled: bool,
+    pub servers: std::collections::BTreeMap<String, LspServerConfig>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -491,6 +499,25 @@ impl LspConfig {
         for (key, value) in table {
             match value {
                 toml::Value::Boolean(on) if key == "enabled" => cfg.disabled = !on,
+                toml::Value::Table(remotes) if key == "remote" => {
+                    for (target, value) in remotes {
+                        if let Some(table) = value.as_table() {
+                            let nested = Self::from_table(table);
+                            cfg.remotes.insert(
+                                target.clone(),
+                                LspRemoteConfig {
+                                    root: table
+                                        .get("root")
+                                        .and_then(|value| value.as_str())
+                                        .unwrap_or("")
+                                        .into(),
+                                    disabled: nested.disabled,
+                                    servers: nested.servers,
+                                },
+                            );
+                        }
+                    }
+                }
                 toml::Value::Table(server) => {
                     cfg.servers.insert(
                         key.clone(),
@@ -1173,6 +1200,19 @@ mod tests {
         let off = Config::from_toml("[lsp]\nenabled = false\n").unwrap();
         assert!(off.lsp.disabled);
         assert_eq!(Config::from_toml("").unwrap().lsp, LspConfig::default());
+    }
+
+    #[test]
+    fn remote_language_server_settings_keep_target_scope() {
+        let cfg=Config::from_toml("[lsp.remote.\"build.example.invalid\"]\nroot=\"/project\"\n[lsp.remote.\"build.example.invalid\".rust]\ncommand=[\"rust-analyzer\"]\n").unwrap();
+        let remote = &cfg.lsp.remotes["build.example.invalid"];
+        assert_eq!(remote.root, "/project");
+        assert_eq!(
+            remote.servers["rust"].command,
+            Some(vec!["rust-analyzer".into()])
+        );
+        assert!(!cfg.lsp.servers.contains_key("remote"));
+        assert!(Config::from_toml("").unwrap().lsp.remotes.is_empty());
     }
 
     #[test]

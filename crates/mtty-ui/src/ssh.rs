@@ -472,6 +472,55 @@ fn transfer_args(destination: &str) -> Vec<String> {
     args
 }
 
+/// The same SSH connection options used by remote file operations.
+pub fn language_server_prefix(destination: &str) -> Vec<String> {
+    let mut command = vec!["ssh".into()];
+    command.extend(transfer_args(destination));
+    command
+}
+
+#[derive(Clone, Debug)]
+pub struct RemoteLspContext {
+    pub path: String,
+    pub root: String,
+}
+
+/// Canonicalize once and discover workspace markers on the remote filesystem.
+pub fn resolve_lsp_context(
+    destination: &str,
+    path: &str,
+    markers: &[String],
+) -> std::io::Result<RemoteLspContext> {
+    let tests = markers
+        .iter()
+        .map(|marker| format!("[ -e \"$dir\"/{} ]", shell_quote(marker)))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    let tests = if tests.is_empty() { "false" } else { &tests };
+    let script = format!("set -e\np={}\ncase $p in /*) ;; *) p=./$p ;; esac\nfile=$(realpath \"$p\" 2>/dev/null) || file=\nif [ -z \"$file\" ]; then dir=$(dirname \"$p\"); base=$(basename \"$p\"); cd -P \"$dir\"; file=$PWD/$base; fi\n[ -f \"$file\" ]\ndir=$(dirname \"$file\"); root=$dir\nwhile :; do\nif {tests}; then root=$dir; break; fi\n[ \"$dir\" = / ] && break\nparent=$(dirname \"$dir\"); [ \"$parent\" = \"$dir\" ] && break\ndir=$parent\ndone\nprintf '%s\\0%s\\0' \"$file\" \"$root\"\n", path_arg(path));
+    let mut args = transfer_args(destination);
+    args.push(format!("sh -lc {}", shell_quote(&script)));
+    let out = mtty_platform::background_command("ssh")
+        .args(args)
+        .output()?;
+    if !out.status.success() {
+        return Err(std::io::Error::other(
+            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        ));
+    }
+    let mut fields = out.stdout.split(|byte| *byte == 0);
+    let path = String::from_utf8(fields.next().unwrap_or_default().to_vec())
+        .map_err(std::io::Error::other)?;
+    let root = String::from_utf8(fields.next().unwrap_or_default().to_vec())
+        .map_err(std::io::Error::other)?;
+    if !path.starts_with('/') || !root.starts_with('/') {
+        return Err(std::io::Error::other(
+            "remote LSP path resolution did not return absolute paths",
+        ));
+    }
+    Ok(RemoteLspContext { path, root })
+}
+
 /// The `ssh` argv for a bounded remote read, reusing the ControlMaster.
 pub fn read_args(dest: &str, path: &str) -> Vec<String> {
     let mut args = transfer_args(dest);

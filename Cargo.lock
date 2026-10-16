@@ -3034,6 +3034,7 @@ dependencies = [
 name = "mtty-lsp"
 version = "0.2.10"
 dependencies = [
+ "libc",
  "mtty-editor",
  "mtty-platform",
  "serde_json",
