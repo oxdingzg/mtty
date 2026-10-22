@@ -15,4 +15,6 @@ This is client-reported metadata, not an authorization grant. Desktop Remote
 Control must attest the specified local Runtime using miao's private-pipe
 bridge, require its observed Runtime ID for mutations, and reject attached,
 missing or malformed context. It must never silently select the default local
-Runtime. The connection window is separate work tracked in #74.
+Runtime. The title-bar account dialog signs the active pane's owned Runtime
+into its Hub account through that bridge; other Remote Control windows remain
+separate work tracked in #74.

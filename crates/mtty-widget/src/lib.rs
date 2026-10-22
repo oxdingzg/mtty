@@ -814,6 +814,19 @@ fn localize_detail(lang: mtty_ui::i18n::Lang, text: &str) -> &str {
     }
 }
 
+/// The title-bar chip wording for the Hub account state.
+fn account_chip_label(
+    lang: mtty_ui::i18n::Lang,
+    status: Option<&mtty_ui::remote_control::AccountStatus>,
+) -> &'static str {
+    match status {
+        Some(status) if status.connected && status.account_id.is_some() => {
+            mtty_ui::i18n::t(lang, "Account", "账号")
+        }
+        _ => mtty_ui::i18n::t(lang, "Sign In", "登录"),
+    }
+}
+
 /// An agent state as the details panel shows it. Only the Agent rows' state
 /// values go through this: a tab or file could be named `idle` too.
 fn agent_state_label(lang: mtty_ui::i18n::Lang, state: &str) -> &str {
@@ -1141,6 +1154,8 @@ struct Editor {
 /// Work finished on a background thread. Network and process work never runs
 /// on the UI thread; the result comes back through `State::jobs_rx`.
 enum JobDone {
+    AccountSetup(Result<mtty_ui::remote_control::AccountStatus, mtty_ui::remote_control::Error>),
+    AccountStatus(Option<mtty_ui::remote_control::AccountStatus>),
     BrowserContextLoaded {
         epoch: u64,
         run: bool,
@@ -1671,6 +1686,27 @@ impl Default for SshForm {
             forwards: Vec::new(),
             new_forward: None,
             advanced: false,
+            error: None,
+        }
+    }
+}
+
+/// The Hub account sign-in dialog buffers.
+struct AccountForm {
+    hub_url: String,
+    email: String,
+    password: String,
+    name: String,
+    error: Option<String>,
+}
+
+impl Default for AccountForm {
+    fn default() -> Self {
+        AccountForm {
+            hub_url: String::new(),
+            email: String::new(),
+            password: String::new(),
+            name: String::new(),
             error: None,
         }
     }
@@ -2242,6 +2278,17 @@ struct State {
     /// Where settings came from when there was no config.toml.
     config_imported_from: Option<&'static str>,
     update_dialog: bool,
+    /// Hub account dialog: open while Some, carrying its form buffers.
+    account_dialog: Option<AccountForm>,
+    /// Last known Remote Control summary for the active pane's Runtime.
+    account_status: Option<mtty_ui::remote_control::AccountStatus>,
+    /// A private-pipe bridge call is in flight; buttons stay disabled.
+    account_busy: bool,
+    /// Cancels the in-flight bridge call when the dialog closes.
+    account_cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// Runtime whose status was already probed, so the chip starts honest
+    /// after a restart without polling the bridge every frame.
+    account_checked: Option<String>,
     details_tab: usize,
     details_cwd: Option<std::path::PathBuf>,
     details_data: Option<DetailsData>,
@@ -4428,8 +4475,226 @@ impl State {
         self.renderers.retain(|id, _| live.contains(id.as_str()));
     }
 
+    /// The active pane's owned Runtime context, the only kind that may carry
+    /// credentials across the private-pipe bridge.
+    fn account_runtime(&self) -> Option<(String, String)> {
+        let pane = self.active_pane_id()?;
+        let state = self.mtp.agent_for(&pane)?;
+        mtty_ui::remote_control::owned_runtime_context(&state)
+    }
+
+    fn open_account_dialog(&mut self) {
+        if self.account_dialog.is_some() {
+            return;
+        }
+        self.refresh_account_status();
+        self.account_dialog = Some(AccountForm::default());
+        self.window.request_redraw();
+    }
+
+    /// Ask the pane's Runtime for its Remote Control summary off the UI thread.
+    fn refresh_account_status(&mut self) {
+        if self.account_busy {
+            return;
+        }
+        let Some((runtime_id, storage)) = self.account_runtime() else {
+            return;
+        };
+        self.account_checked = Some(runtime_id.clone());
+        let Some(executable) = mtty_ui::integration::executable("miao") else {
+            return;
+        };
+        self.account_busy = true;
+        self.account_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = Arc::clone(&self.account_cancel);
+        self.spawn_job(move || {
+            let request = mtty_ui::remote_control::Request {
+                storage: Some(storage),
+                runtime_id: Some(runtime_id),
+                operation: mtty_ui::remote_control::Operation::Status,
+            };
+            let status = mtty_ui::remote_control::call(&executable, &request, &cancel)
+                .ok()
+                .and_then(|reply| mtty_ui::remote_control::parse_status(&reply.data));
+            JobDone::AccountStatus(status)
+        });
+    }
+
+    fn submit_account_dialog(&mut self) {
+        use mtty_ui::i18n::t;
+        if self.account_busy {
+            return;
+        }
+        let hub_url = self
+            .account_dialog
+            .as_ref()
+            .map(|form| form.hub_url.trim().to_string())
+            .unwrap_or_default();
+        let email = self
+            .account_dialog
+            .as_ref()
+            .map(|form| form.email.trim().to_string())
+            .unwrap_or_default();
+        let password = self
+            .account_dialog
+            .as_ref()
+            .map(|form| form.password.clone())
+            .unwrap_or_default();
+        let name = self
+            .account_dialog
+            .as_ref()
+            .map(|form| form.name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "mtty".to_string());
+        let missing = hub_url.is_empty() || email.is_empty() || password.is_empty();
+        if missing {
+            if let Some(form) = self.account_dialog.as_mut() {
+                form.error =
+                    Some(t(self.lang, "Fill in every field.", "请填写所有字段。").to_string());
+            }
+            return;
+        }
+        let Some((runtime_id, storage)) = self.account_runtime() else {
+            if let Some(form) = self.account_dialog.as_mut() {
+                form.error = Some(
+                    t(
+                        self.lang,
+                        "Run miao in this pane first.",
+                        "请先在此窗格中运行 miao。",
+                    )
+                    .to_string(),
+                );
+            }
+            return;
+        };
+        let Some(executable) = mtty_ui::integration::executable("miao") else {
+            if let Some(form) = self.account_dialog.as_mut() {
+                form.error = Some(
+                    t(
+                        self.lang,
+                        "The miao CLI is not installed.",
+                        "尚未安装 miao 命令行。",
+                    )
+                    .to_string(),
+                );
+            }
+            return;
+        };
+        self.account_busy = true;
+        self.account_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = Arc::clone(&self.account_cancel);
+        self.spawn_job(move || {
+            let request = mtty_ui::remote_control::Request {
+                storage: Some(storage),
+                runtime_id: Some(runtime_id),
+                operation: mtty_ui::remote_control::Operation::Setup {
+                    hub_url,
+                    email,
+                    password,
+                    name,
+                },
+            };
+            let result =
+                mtty_ui::remote_control::call(&executable, &request, &cancel).map(|reply| {
+                    mtty_ui::remote_control::parse_status(&reply.data).unwrap_or(
+                        mtty_ui::remote_control::AccountStatus {
+                            enabled: true,
+                            connected: false,
+                            hub_url: None,
+                            account_id: None,
+                        },
+                    )
+                });
+            JobDone::AccountSetup(result)
+        });
+    }
+
+    fn account_window(&mut self, ctx: &egui::Context) {
+        use mtty_ui::i18n::t;
+        let lang = self.lang;
+        let busy = self.account_busy;
+        let status = self.account_status.clone();
+        let negative = chrome_rgb(self.theme.chrome().negative);
+        let Some(form) = self.account_dialog.as_mut() else {
+            return;
+        };
+        let mut open = true;
+        let mut submit = false;
+        let mut close = false;
+        egui::Window::new(t(lang, "Hub account", "Hub 账号"))
+            .id(egui::Id::new("hub_account"))
+            .open(&mut open)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(360.0)
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                match &status {
+                    Some(status) if status.connected && status.account_id.is_some() => {
+                        ui.horizontal(|ui| {
+                            ui.label(t(lang, "Signed in", "已登录"));
+                            if let Some(hub) = &status.hub_url {
+                                ui.label(hub);
+                            }
+                        });
+                    }
+                    _ => {
+                        ui.label(t(
+                            lang,
+                            "Sign this machine in to your Hub account. miao must be running in the active pane.",
+                            "将本机登录到你的 Hub 账号。需要 miao 正在当前窗格中运行。",
+                        ));
+                    }
+                }
+                ui.add_space(6.0);
+                for (label, zh, buffer, password) in [
+                    ("Hub URL", "Hub URL", &mut form.hub_url, false),
+                    ("Email", "邮箱", &mut form.email, false),
+                    ("Password", "密码", &mut form.password, true),
+                    ("Name (optional)", "名称（可选）", &mut form.name, false),
+                ] {
+                    ui.horizontal(|ui| {
+                        ui.label(t(lang, label, zh));
+                        let edit = egui::TextEdit::singleline(buffer).password(password).desired_width(220.0);
+                        ui.add(edit);
+                    });
+                }
+                if let Some(error) = &form.error {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(error).color(negative));
+                }
+                ui.add_space(16.0);
+                button_row(ui, |ui| {
+                    if busy {
+                        ui.spinner();
+                        ui.label(t(lang, "Signing in…", "正在登录…"));
+                    } else if ui.button(t(lang, "Sign In", "登录")).clicked() {
+                        submit = true;
+                    }
+                    if ui.button(t(lang, "Close", "关闭")).clicked() {
+                        close = true;
+                    }
+                });
+                ui.add_space(4.0);
+            });
+        if submit {
+            self.submit_account_dialog();
+        }
+        if !open || close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.account_cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.account_dialog = None;
+        }
+        self.window.request_redraw();
+    }
+
     fn chrome(&mut self, ctx: &egui::Context) {
         self.refresh_agents_detected();
+        let probed = self.account_runtime().map(|(runtime_id, _)| runtime_id);
+        if probed.is_some() && probed.as_deref() != self.account_checked.as_deref() {
+            self.refresh_account_status();
+        }
         // Shared, host-agnostic chrome (menu/tabs/sidebar/details/status).
         chrome::render(ctx, self);
         self.pane_context_menu(ctx);
@@ -4574,6 +4839,9 @@ impl State {
             if let Some(path) = install {
                 self.install_update(&path);
             }
+        }
+        if self.account_dialog.is_some() {
+            self.account_window(ctx);
         }
         // Hyperlink hover cue: hand cursor + underline while Cmd/Ctrl is held.
         let link = if self.mods.super_key() || self.mods.control_key() {
@@ -15074,6 +15342,33 @@ impl State {
     fn finish_job(&mut self, done: JobDone) {
         use mtty_ui::i18n::t;
         match done {
+            JobDone::AccountSetup(result) => {
+                self.account_busy = false;
+                match result {
+                    Ok(status) => {
+                        self.account_status = Some(status);
+                        self.account_dialog = None;
+                    }
+                    Err(_) => {
+                        if let Some(form) = self.account_dialog.as_mut() {
+                            form.error = Some(
+                                t(
+                                    self.lang,
+                                    "Sign-in could not be confirmed; check the runtime and the Hub, then try again.",
+                                    "登录结果未确认；请检查运行状态与 Hub 后重试。",
+                                )
+                                .to_string(),
+                            );
+                        }
+                    }
+                }
+            }
+            JobDone::AccountStatus(status) => {
+                self.account_busy = false;
+                if status.is_some() {
+                    self.account_status = status;
+                }
+            }
             JobDone::DataPreviewLoaded { epoch, result } => {
                 if let Some(view) = self
                     .data_preview
@@ -16747,6 +17042,11 @@ impl ApplicationHandler<HostEvent> for Host {
             saved_settings: Vec::new(),
             config_imported_from: cfg.imported_from,
             update_dialog: false,
+            account_dialog: None,
+            account_status: None,
+            account_busy: false,
+            account_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            account_checked: None,
             details_tab: mtty_config::env("DETAILS_TAB")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(window_state.details_tab),
@@ -19604,6 +19904,24 @@ impl chrome::Chrome for State {
         self.miao_launch_pending = Some((pane.id.clone(), Instant::now()));
         self.window.request_redraw();
     }
+    fn account_chip(&self) -> Option<String> {
+        if self.read_only {
+            return None;
+        }
+        let installed = mtty_ui::integration::AGENTS
+            .iter()
+            .position(|agent| agent.name == "miao")
+            .and_then(|index| self.agents_detected.as_ref()?.1.get(index))
+            .copied()
+            .unwrap_or(false);
+        if !installed {
+            return None;
+        }
+        Some(account_chip_label(self.lang, self.account_status.as_ref()).to_string())
+    }
+    fn on_account_chip(&mut self) {
+        self.open_account_dialog();
+    }
     fn status_right(&self) -> String {
         if let Some(ed) = self.active_editor() {
             let (line, col) = ed.caret_line_col();
@@ -21215,6 +21533,29 @@ mod tests {
             "idle",
             "only Agent state values are states"
         );
+    }
+
+    #[test]
+    fn account_chip_wording_follows_the_account_state() {
+        use mtty_ui::i18n::Lang;
+        use mtty_ui::remote_control::AccountStatus;
+        assert_eq!(account_chip_label(Lang::En, None), "Sign In");
+        assert_eq!(account_chip_label(Lang::Zh, None), "登录");
+        let detached = AccountStatus {
+            enabled: true,
+            connected: false,
+            hub_url: Some("https://hub.example.invalid".into()),
+            account_id: None,
+        };
+        assert_eq!(account_chip_label(Lang::En, Some(&detached)), "Sign In");
+        let attached = AccountStatus {
+            enabled: true,
+            connected: true,
+            hub_url: Some("https://hub.example.invalid".into()),
+            account_id: Some("acct-1".into()),
+        };
+        assert_eq!(account_chip_label(Lang::En, Some(&attached)), "Account");
+        assert_eq!(account_chip_label(Lang::Zh, Some(&attached)), "账号");
     }
 
     #[test]

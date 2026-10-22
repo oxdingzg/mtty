@@ -940,6 +940,12 @@ pub trait Chrome {
     }
     /// Type `miao` and Enter into the active terminal, without making a tab.
     fn on_launch_miao(&mut self) {}
+    /// Right-edge account chip text; `None` hides the chip.
+    fn account_chip(&self) -> Option<String> {
+        None
+    }
+    /// The account chip was clicked.
+    fn on_account_chip(&mut self) {}
     fn on_new_tab(&mut self) {}
     fn on_switch_tab(&mut self, i: usize) {}
     fn on_close_tab(&mut self, i: usize) {}
@@ -1118,6 +1124,7 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
     let mut new_tab = false;
     let mut font_delta = 0.0f32;
     let mut launch_miao = false;
+    let mut account_chip = false;
     let mut toggle_sidebar = false;
     let mut toggle_details = false;
     let mut details_sel = None;
@@ -1298,6 +1305,14 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
                         {
                             minimize_window = true;
                         }
+                    }
+                    // Right-to-left: this lands immediately left of the window
+                    // buttons, the corner a Zed-style account affordance lives in.
+                    if host
+                        .account_chip()
+                        .is_some_and(|label| ui.button(label).clicked())
+                    {
+                        account_chip = true;
                     }
                     if ui.button("A+").clicked() {
                         font_delta = 1.0;
@@ -1505,6 +1520,9 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
     }
     if let Some(i) = switch {
         host.on_switch_tab(i);
+    }
+    if account_chip {
+        host.on_account_chip();
     }
     // Per-pane close button, top-right of each pane. The host decides which
     // panes want one: every pane of a split tab, and a lone editor pane, whose

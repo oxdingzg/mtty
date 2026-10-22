@@ -63,15 +63,20 @@ pub const AGENTS: &[Agent] = &[
 /// Whether `bin` is available. Finder-launched apps may not inherit the
 /// shell's PATH addition for miao's official installation directory.
 pub fn detected(bin: &str) -> bool {
-    if mtty_platform::find_executable(bin).is_some() {
-        return true;
+    executable(bin).is_some()
+}
+
+/// Path to `bin`, honoring miao's official installation directory when the
+/// Finder-launched app does not inherit the shell's PATH addition.
+pub fn executable(bin: &str) -> Option<PathBuf> {
+    if let Some(path) = mtty_platform::find_executable(bin) {
+        return Some(path);
     }
     if bin != "miao" {
-        return false;
+        return None;
     }
     mtty_config::home_dir()
         .and_then(|home| mtty_platform::find_executable(home.join(".miao/bin/miao")))
-        .is_some()
 }
 
 /// `~/.config/mtty/hooks`.

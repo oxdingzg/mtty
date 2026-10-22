@@ -13,7 +13,7 @@
 editor for local and remote work**: terminals, files, remote hosts and AI coding
 agents share one fast, native window and the same tabs and splits. It stands on
 three pillars — terminal and remote, editor, agent workspace — tied together by
-Rust and GPU rendering under a performance gate, and by no account or forced
+Rust and GPU rendering under a performance gate, and by no forced account or
 cloud: mtty hosts the agents you choose and never calls a model itself.
 
 | Area | User value |
@@ -365,7 +365,7 @@ verified on its own:
 
 ## 5. Non-goals
 
-- No accounts or mandatory sign-in; every cloud feature is optional.
+- No mandatory sign-in; every cloud and account feature is optional.
 - No built-in model calls; mtty orchestrates external agents, it does not
   replace them.
 - No edits to the user's shell, agent or ssh config files.

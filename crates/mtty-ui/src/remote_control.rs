@@ -226,6 +226,45 @@ fn decode(bytes: &[u8], request: &Request, failure: Error) -> Result<Reply, Erro
     })
 }
 
+/// The `(runtimeID, storage)` an observing client reported for its pane, when
+/// that client owns the Runtime. Attached, missing or malformed context must
+/// never reach the bridge: only an owned Runtime may receive credentials.
+pub fn owned_runtime_context(state: &Value) -> Option<(String, String)> {
+    let context = state.get("runtime_context")?;
+    if context.get("kind")?.as_str()? != "owned" {
+        return None;
+    }
+    let runtime_id = context.get("runtimeID")?.as_str()?.to_string();
+    let storage = context.get("storage")?.as_str()?.to_string();
+    Some((runtime_id, storage))
+}
+
+/// The Remote Control summary the title bar shows; no secrets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountStatus {
+    pub enabled: bool,
+    pub connected: bool,
+    pub hub_url: Option<String>,
+    pub account_id: Option<String>,
+}
+
+/// Project a Remote Access status payload; absent fields stay absent rather
+/// than failing the whole summary.
+pub fn parse_status(data: &Value) -> Option<AccountStatus> {
+    Some(AccountStatus {
+        enabled: data.get("enabled")?.as_bool()?,
+        connected: data.get("connected")?.as_bool()?,
+        hub_url: data
+            .get("hubURL")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        account_id: data
+            .get("accountID")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +348,41 @@ mod tests {
         ));
         assert!(started.elapsed() < Duration::from_secs(2));
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn only_owned_pane_context_reaches_the_bridge() {
+        let owned = serde_json::json!({
+            "runtime_context": { "kind": "owned", "runtimeID": "runtime-1", "storage": "storage.db" }
+        });
+        assert_eq!(
+            owned_runtime_context(&owned),
+            Some(("runtime-1".into(), "storage.db".into()))
+        );
+        let attached = serde_json::json!({ "runtime_context": { "kind": "attached" } });
+        assert_eq!(owned_runtime_context(&attached), None);
+        assert_eq!(owned_runtime_context(&serde_json::json!({})), None);
+        let malformed =
+            serde_json::json!({ "runtime_context": { "kind": "owned", "runtimeID": "runtime-1" } });
+        assert_eq!(owned_runtime_context(&malformed), None);
+    }
+
+    #[test]
+    fn status_summary_keeps_absent_fields_absent() {
+        let status = parse_status(&serde_json::json!({
+            "enabled": true, "connected": true, "hubURL": "https://hub.example.invalid", "accountID": "acct-1"
+        }))
+        .unwrap();
+        assert!(status.enabled && status.connected);
+        assert_eq!(
+            status.hub_url.as_deref(),
+            Some("https://hub.example.invalid")
+        );
+        assert_eq!(status.account_id.as_deref(), Some("acct-1"));
+        let partial =
+            parse_status(&serde_json::json!({ "enabled": false, "connected": false })).unwrap();
+        assert_eq!(partial.hub_url, None);
+        assert_eq!(partial.account_id, None);
+        assert_eq!(parse_status(&serde_json::json!({ "enabled": true })), None);
     }
 }

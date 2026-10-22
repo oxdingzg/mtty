@@ -28,7 +28,7 @@ When miao is installed, the cat button at the top right starts `miao` in the cur
 
 What ties them together: Rust and GPU rendering held to a performance gate;
 terminal, editor, remote hosts and agents in the same tabs and splits; no
-account, no forced cloud — mtty hosts the agents you choose and never calls a
+forced account or cloud — mtty hosts the agents you choose and never calls a
 model itself.
 
 In this repository:
