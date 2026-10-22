@@ -1692,24 +1692,13 @@ impl Default for SshForm {
 }
 
 /// The Hub account sign-in dialog buffers.
+#[derive(Default)]
 struct AccountForm {
     hub_url: String,
     email: String,
     password: String,
     name: String,
     error: Option<String>,
-}
-
-impl Default for AccountForm {
-    fn default() -> Self {
-        AccountForm {
-            hub_url: String::new(),
-            email: String::new(),
-            password: String::new(),
-            name: String::new(),
-            error: None,
-        }
-    }
 }
 
 impl SshForm {
