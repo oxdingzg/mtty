@@ -399,7 +399,7 @@ texts follow the table, once per distinct text.
 | rustix-openpty 0.2.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [github.com/sunfishcode/rustix-openpty](https://github.com/sunfishcode/rustix-openpty) |
 | rustls 0.23.46 | Apache-2.0 OR ISC OR MIT | [github.com/rustls/rustls](https://github.com/rustls/rustls) |
 | rustls-pki-types 1.15.1 | MIT OR Apache-2.0 | [github.com/rustls/pki-types](https://github.com/rustls/pki-types) |
-| rustls-webpki 0.103.15 | ISC | [github.com/rustls/webpki](https://github.com/rustls/webpki) |
+| rustls-webpki 0.103.16 | ISC | [github.com/rustls/webpki](https://github.com/rustls/webpki) |
 | rustversion 1.0.23 | MIT OR Apache-2.0 | [github.com/dtolnay/rustversion](https://github.com/dtolnay/rustversion) |
 | rustybuzz 0.14.1 | MIT | [github.com/RazrFalcon/rustybuzz](https://github.com/RazrFalcon/rustybuzz) |
 | same-file 1.0.6 | Unlicense/MIT | [github.com/BurntSushi/same-file](https://github.com/BurntSushi/same-file) |
@@ -585,7 +585,7 @@ texts follow the table, once per distinct text.
 | web-time 1.1.0 | MIT OR Apache-2.0 | [github.com/daxpedda/web-time](https://github.com/daxpedda/web-time) |
 | webbrowser 1.2.4 | MIT OR Apache-2.0 | [github.com/amodm/webbrowser-rs](https://github.com/amodm/webbrowser-rs) |
 | webpki-roots 0.26.11 | CDLA-Permissive-2.0 | [github.com/rustls/webpki-roots](https://github.com/rustls/webpki-roots) |
-| webpki-roots 1.0.9 | CDLA-Permissive-2.0 | [github.com/rustls/webpki-roots](https://github.com/rustls/webpki-roots) |
+| webpki-roots 1.0.10 | CDLA-Permissive-2.0 | [github.com/rustls/webpki-roots](https://github.com/rustls/webpki-roots) |
 | weezl 0.1.12 | MIT OR Apache-2.0 | [github.com/image-rs/weezl](https://github.com/image-rs/weezl) |
 | wgpu 23.0.1 | MIT OR Apache-2.0 | [github.com/gfx-rs/wgpu](https://github.com/gfx-rs/wgpu) |
 | wgpu-core 23.0.1 | MIT OR Apache-2.0 | [github.com/gfx-rs/wgpu](https://github.com/gfx-rs/wgpu) |
@@ -9610,7 +9610,7 @@ ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ```
 
-This exact text is filed by rustls-webpki 0.103.15.
+This exact text is filed by rustls-webpki 0.103.16.
 
 ```text
 Except as otherwise noted, this project is licensed under the following
