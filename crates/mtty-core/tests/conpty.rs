@@ -87,6 +87,55 @@ fn conpty_resize_updates_screen_and_pty() {
 }
 
 #[test]
+fn conpty_repaint_keeps_restored_history_out_of_the_live_screen() {
+    let cwd = std::env::current_dir().unwrap();
+    let prompt = format!("{}>", cwd.display());
+    let mut term = Terminal::new(
+        Some("cmd.exe".into()),
+        240,
+        30,
+        2000,
+        Some(cwd),
+        &[],
+        std::sync::Arc::new(|| {}),
+    )
+    .expect("start fresh ConPTY");
+    // As at application startup, replay before draining the fresh PTY.
+    term.screen_mut()
+        .process(b"RESTORED_OLD_TUI\r\nold tool output\r\n");
+    term.finish_history_restore("[mtty] restored\r\n", None);
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut text = String::new();
+    let mut sent = false;
+    while Instant::now() < deadline {
+        term.process_pending();
+        text = screen_text(&term);
+        if text.lines().any(|line| line.trim() == "FRESH_PTY_OK") {
+            break;
+        }
+        if !sent && text.contains(&prompt) {
+            // ConPTY repaints with absolute positions on resize.
+            term.resize(40, 250);
+            term.write(b"echo FRESH_PTY_OK\r");
+            sent = true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    term.write(b"exit\r");
+    assert!(text.contains(&prompt), "full shell prompt missing: {text}");
+    assert!(
+        text.lines().any(|line| line.trim() == "FRESH_PTY_OK"),
+        "fresh shell did not respond: {text}"
+    );
+    assert!(!text.contains("RESTORED_OLD_TUI"));
+    assert!(!text.contains("old tool output"));
+    let (history, _) = term.snapshot_scrollback(2000);
+    assert!(history.contains("RESTORED_OLD_TUI"));
+    assert!(history.contains("old tool output"));
+}
+
+#[test]
 fn conpty_uses_current_user_environment_and_explicit_overrides() {
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
     use winreg::RegKey;

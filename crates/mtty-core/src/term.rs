@@ -989,6 +989,39 @@ impl Terminal {
         (text, images)
     }
 
+    /// Finish history replay at its final width, restoring images before the
+    /// note changes their text anchor. A fresh PTY then owns an empty screen.
+    pub fn finish_history_restore(
+        &mut self,
+        note: &str,
+        images: Option<&crate::graphics::SavedImages>,
+    ) {
+        // Text replay bypasses `feed`, so establish the growth baseline before
+        // placing images, rather than shifting new placements retroactively.
+        self.graphics.sync_total(self.screen.total_lines());
+        if let Some(saved) = images.filter(|_| self.graphics_enabled) {
+            if let Some(last) = self.screen.last_content_index() {
+                self.graphics.restore_images(
+                    saved,
+                    self.screen.history_size() as i32,
+                    last as i32,
+                    self.screen.size().1,
+                    self.graphics.max_pixels,
+                );
+            }
+        }
+        self.feed(note.as_bytes());
+        let before = self.screen.total_lines();
+        let rows = self.screen.size().0 as usize;
+        self.screen.finish_history_restore();
+        let after = self.screen.total_lines();
+        self.graphics.sync_total(after);
+        // At the history cap, CSI S still scrolls even though total size no
+        // longer grows. Its row movement must also move the image anchors.
+        self.graphics
+            .shift(rows.saturating_sub(after.saturating_sub(before)));
+    }
+
     /// Send raw bytes (keyboard/paste) to the shell.
     pub fn write(&mut self, bytes: &[u8]) {
         if self.writer.write_all(bytes).is_ok() {
@@ -2449,6 +2482,34 @@ mod tests {
         // Sixel sits on the row the cursor was on, then advances one row before
         // "after": one row above the captured window's last row.
         assert_eq!(saved.images[0].delta, -1);
+    }
+
+    #[test]
+    fn restored_images_follow_their_text_into_history() {
+        let mut original = make();
+        original.feed_for_test(b"one\r\ntwo\r\n");
+        original.feed_for_test(b"\x1bPq#0;2;100;0;0#0~~~~~~~~~~\x1b\\");
+        original.feed_for_test(b"after\r\n");
+        let (text, images) = original.snapshot_scrollback(100);
+        let saved = images.unwrap();
+
+        let mut restored = make();
+        restored.screen_mut().process(text.as_bytes());
+        let text_row = restored.screen().last_content_index().unwrap() as i32;
+        let image_row = text_row + saved.images[0].delta;
+        restored.finish_history_restore("[mtty] restored\r\n", Some(&saved));
+        let history = restored.screen().history_size() as i32;
+        assert_eq!(restored.screen().cursor(), (0, 0));
+        assert_eq!(restored.graphics().images.len(), 1);
+        assert_eq!(restored.graphics().images[0].anchor + history, image_row);
+        assert_eq!(restored.screen().line_text_abs(text_row as usize), "after");
+
+        // Synchronizing idle output and repainting the fresh viewport must not
+        // shift the newly restored image a second time.
+        restored.process_pending();
+        restored.feed_for_test(b"\x1b[H\x1b[2Jprompt>");
+        assert_eq!(restored.graphics().images[0].anchor + history, image_row);
+        assert_eq!(restored.screen().line_text(0), "prompt>");
     }
 
     #[test]

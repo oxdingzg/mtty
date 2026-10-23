@@ -2575,24 +2575,12 @@ impl State {
     /// rather than drawn over the wrong text (see `GraphicsLayer::restore_images`).
     fn apply_restored_images(&mut self) {
         for pane in self.tabs.iter_mut().flat_map(|t| t.panes.iter_mut()) {
-            if let Some(pending) = pane.pending_images.take() {
-                if self.graphics_enabled {
-                    if let Some(last) = pane.term.screen().last_content_index() {
-                        let cols = pane.term.screen().size().1;
-                        let history = pane.term.screen().history_size() as i32;
-                        let max_pixels = pane.term.graphics().max_pixels;
-                        pane.term.graphics_mut().restore_images(
-                            &pending.saved,
-                            history,
-                            last as i32,
-                            cols,
-                            max_pixels,
-                        );
-                    }
-                }
-            }
+            let images = pane.pending_images.take().filter(|_| self.graphics_enabled);
             if let Some(note) = pane.pending_note.take() {
-                pane.term.screen_mut().process(note.as_bytes());
+                // Replayed contents are history, not the fresh shell's live
+                // screen. ConPTY redraws that screen with absolute positions.
+                pane.term
+                    .finish_history_restore(&note, images.as_ref().map(|pending| &pending.saved));
             }
         }
     }

@@ -348,6 +348,14 @@ impl ATerm {
         self.with_main_screen(|term| term.main_screen_ansi_last(max_lines))
     }
 
+    /// Move replayed history off the live screen before a fresh PTY starts
+    /// drawing. Its absolute cursor positions refer to an empty screen, not
+    /// to the last session's contents (notably ConPTY's repaint on resize).
+    pub fn finish_history_restore(&mut self) {
+        self.process(format!("\x1b[{}S\x1b[H", self.rows).as_bytes());
+        self.term.scroll_display(Scroll::Bottom);
+    }
+
     /// Run `f` over the main screen even while an alternate screen (vim, less)
     /// is active, restoring the alternate screen afterwards.
     fn with_main_screen<R>(&mut self, f: impl FnOnce(&Self) -> R) -> R {
@@ -634,6 +642,33 @@ fn sgr(c: Color, bg: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restored_history_survives_a_fresh_pty_repaint() {
+        let mut term = ATerm::new(40, 5, 100);
+        term.process(b"old command\r\nold output\r\n[mtty] restored\r\n");
+        term.finish_history_restore();
+        assert_eq!(term.cursor(), (0, 0));
+        assert!((0..5).all(|row| term.line_text(row).is_empty()));
+        let history = term.history_size();
+        assert_eq!(term.line_text_abs(0), "old command");
+        assert_eq!(term.line_text_abs(1), "old output");
+
+        // ConPTY owns a new, empty screen. A resize repaint clears it and
+        // positions the prompt absolutely; this must never erase saved text.
+        term.process(b"\x1b[H\x1b[2JC:\\project>");
+        assert_eq!(term.line_text(0), "C:\\project>");
+        assert_eq!(term.history_size(), history);
+        assert_eq!(term.line_text_abs(0), "old command");
+        assert_eq!(term.line_text_abs(1), "old output");
+        assert_eq!(term.line_text_abs(2), "[mtty] restored");
+
+        // A full-screen client can then start and quit without revealing
+        // fragments of the old client in the fresh shell's live viewport.
+        term.process(b"\x1b[?1049hnew client\x1b[?1049l");
+        assert_eq!(term.line_text(0), "C:\\project>");
+        assert!((1..5).all(|row| term.line_text(row).is_empty()));
+    }
 
     #[test]
     fn narrow_grids_keep_room_for_wide_characters() {
