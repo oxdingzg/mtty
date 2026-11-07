@@ -42,7 +42,7 @@
    (默认 `~/.local/share/miaotty/session.json`)。
 
 旧文件保留。eframe 的索引式布局和焦点转换为 native pane ID,保留分屏方向/比例、cwd、标题、
-前缀、标记、分组、活动标签和最近文件;Recipes 也经过同样转换。恢复的是布局并创建新 shell,
+标记、分组、活动标签和最近文件;Recipes 也经过同样转换。恢复的是布局并创建新 shell,
 不是保住仍在运行的进程。
 
 ## 构建、安装与核验

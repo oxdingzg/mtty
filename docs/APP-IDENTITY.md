@@ -49,7 +49,7 @@ use this priority:
 
 Legacy files remain intact. The indexed eframe layout and pane focus are
 converted to native IDs, including split directions/ratios, cwd, tab title,
-prefix, mark, group, active tab and recent files; recipes use the same
+mark, group, active tab and recent files; recipes use the same
 conversion. Restoring brings back layouts and starts new shells; it does not
 preserve running processes.
 
