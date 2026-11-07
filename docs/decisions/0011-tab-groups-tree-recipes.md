@@ -17,11 +17,11 @@ wherever the group changes, so tabs of one group sit together. All three are set
 from the sidebar context menu (Rename / Prefix / Mark / Group, plus *Remove from
 Group*) through one dialog keyed by `TabField`, and they round-trip through
 `session.json` as `#[serde(default)]` fields (older sessions load unchanged).
-The title names the state, the group and the prefix in that order
-(`[working] [work] [dev] title★`), so a narrow tab strip still says what the tab
-is doing and where it belongs. A tab that joins a group moves next to the last
-tab carrying that name, and the Group dialog lists the groups already in use so
-joining one is a click rather than a retyped name.
+The state stays the tab's icon; the title names the group and the prefix
+(`[work] [dev] title★`), so a narrow tab strip still says where the tab
+belongs. A tab that joins a group moves next to the last tab carrying that
+name, and the Group dialog lists the groups already in use so joining one is a
+click rather than a retyped name.
 
 **File tree (U1).** The left sidebar shows a tree of the focused pane's cwd
 below the tab list. Directories expand/collapse (state in
