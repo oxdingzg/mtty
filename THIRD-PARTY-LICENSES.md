@@ -105,7 +105,7 @@ texts follow the table, once per distinct text.
 | chacha20 0.9.1 | Apache-2.0 OR MIT | [github.com/RustCrypto/stream-ciphers](https://github.com/RustCrypto/stream-ciphers) |
 | chacha20poly1305 0.10.1 | Apache-2.0 OR MIT | [github.com/RustCrypto/AEADs/tree/master/chacha20poly1305](https://github.com/RustCrypto/AEADs/tree/master/chacha20poly1305) |
 | cipher 0.4.4 | MIT OR Apache-2.0 | [github.com/RustCrypto/traits](https://github.com/RustCrypto/traits) |
-| clipboard-win 5.4.1 | BSL-1.0 | [github.com/DoumanAsh/clipboard-win](https://github.com/DoumanAsh/clipboard-win) |
+| clipboard-win 5.4.3 | BSL-1.0 | [github.com/DoumanAsh/clipboard-win](https://github.com/DoumanAsh/clipboard-win) |
 | codespan-reporting 0.11.1 | Apache-2.0 | [github.com/brendanzab/codespan](https://github.com/brendanzab/codespan) |
 | combine 4.6.8 | MIT | [github.com/Marwes/combine](https://github.com/Marwes/combine) |
 | concurrent-queue 2.5.0 | Apache-2.0 OR MIT | [github.com/smol-rs/concurrent-queue](https://github.com/smol-rs/concurrent-queue) |
@@ -9313,7 +9313,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ### BSL-1.0
 
-This exact text is filed by clipboard-win 5.4.1.
+This exact text is filed by clipboard-win 5.4.3.
 
 ```text
 NOT FOUND
