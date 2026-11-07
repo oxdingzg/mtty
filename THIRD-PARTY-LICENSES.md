@@ -105,7 +105,7 @@ texts follow the table, once per distinct text.
 | chacha20 0.9.1 | Apache-2.0 OR MIT | [github.com/RustCrypto/stream-ciphers](https://github.com/RustCrypto/stream-ciphers) |
 | chacha20poly1305 0.10.1 | Apache-2.0 OR MIT | [github.com/RustCrypto/AEADs/tree/master/chacha20poly1305](https://github.com/RustCrypto/AEADs/tree/master/chacha20poly1305) |
 | cipher 0.4.4 | MIT OR Apache-2.0 | [github.com/RustCrypto/traits](https://github.com/RustCrypto/traits) |
-| clipboard-win 5.4.1 | BSL-1.0 | [github.com/DoumanAsh/clipboard-win](https://github.com/DoumanAsh/clipboard-win) |
+| clipboard-win 5.4.3 | BSL-1.0 | [github.com/DoumanAsh/clipboard-win](https://github.com/DoumanAsh/clipboard-win) |
 | codespan-reporting 0.11.1 | Apache-2.0 | [github.com/brendanzab/codespan](https://github.com/brendanzab/codespan) |
 | combine 4.6.8 | MIT | [github.com/Marwes/combine](https://github.com/Marwes/combine) |
 | concurrent-queue 2.5.0 | Apache-2.0 OR MIT | [github.com/smol-rs/concurrent-queue](https://github.com/smol-rs/concurrent-queue) |
@@ -466,7 +466,7 @@ texts follow the table, once per distinct text.
 | tiny-skia-path 0.11.4 | BSD-3-Clause | [github.com/RazrFalcon/tiny-skia/tree/master/path](https://github.com/RazrFalcon/tiny-skia/tree/master/path) |
 | tinystr 0.8.4 | Unicode-3.0 | [github.com/unicode-org/icu4x](https://github.com/unicode-org/icu4x) |
 | tinyvec 1.13.3 | Zlib OR Apache-2.0 OR MIT | [github.com/Lokathor/tinyvec](https://github.com/Lokathor/tinyvec) |
-| tokio 1.53.1 | MIT | [github.com/tokio-rs/tokio](https://github.com/tokio-rs/tokio) |
+| tokio 1.54.1 | MIT | [github.com/tokio-rs/tokio](https://github.com/tokio-rs/tokio) |
 | toml 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 | [github.com/toml-rs/toml](https://github.com/toml-rs/toml) |
 | toml_datetime 0.6.3 | MIT OR Apache-2.0 | [github.com/toml-rs/toml](https://github.com/toml-rs/toml) |
 | toml_datetime 1.1.1+spec-1.1.0 | MIT OR Apache-2.0 | [github.com/toml-rs/toml](https://github.com/toml-rs/toml) |
@@ -9313,7 +9313,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ### BSL-1.0
 
-This exact text is filed by clipboard-win 5.4.1.
+This exact text is filed by clipboard-win 5.4.3.
 
 ```text
 NOT FOUND
@@ -14676,7 +14676,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-This exact text is filed by tokio 1.53.1.
+This exact text is filed by tokio 1.54.1.
 
 ```text
 MIT License
