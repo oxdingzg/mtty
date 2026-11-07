@@ -63,6 +63,22 @@ ignore = [
   # RE-ASSESS when ssh-key is upgraded. Assessed 2026-10-03.
   "RUSTSEC-2023-0071",
 
+  # --- A vulnerability, assessed as unreachable ---------------------------------
+  # crypto-bigint: constant-time operations can branch on secret values
+  # (RUSTSEC-2026-0387). Fixed in 0.7.6; this tree pins 0.5.5 through
+  # `ssh-key -> elliptic-curve 0.13`, and no ssh-key release accepts the fixed
+  # line yet.
+  #
+  # mtty reaches an elliptic curve only to parse and re-encode an OpenSSH or
+  # .ppk private key (crates/mtty-keys: PrivateKey::from_openssh / to_openssh);
+  # the workspace contains no ECDSA sign, verify or ECDH call, so the
+  # secret-dependent arithmetic the advisory describes is not on any path from
+  # this code. The RSA entry above rests on the same use.
+  #
+  # RE-ASSESS when ssh-key (or elliptic-curve) moves to crypto-bigint 0.7.
+  # Assessed 2026-11-07.
+  "RUSTSEC-2026-0387",
+
 ]
 
 # The unmaintained advisories are deliberately *not* ignored. "Unmaintained" says

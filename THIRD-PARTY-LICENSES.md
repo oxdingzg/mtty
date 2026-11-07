@@ -466,7 +466,7 @@ texts follow the table, once per distinct text.
 | tiny-skia-path 0.11.4 | BSD-3-Clause | [github.com/RazrFalcon/tiny-skia/tree/master/path](https://github.com/RazrFalcon/tiny-skia/tree/master/path) |
 | tinystr 0.8.4 | Unicode-3.0 | [github.com/unicode-org/icu4x](https://github.com/unicode-org/icu4x) |
 | tinyvec 1.13.3 | Zlib OR Apache-2.0 OR MIT | [github.com/Lokathor/tinyvec](https://github.com/Lokathor/tinyvec) |
-| tokio 1.53.1 | MIT | [github.com/tokio-rs/tokio](https://github.com/tokio-rs/tokio) |
+| tokio 1.54.1 | MIT | [github.com/tokio-rs/tokio](https://github.com/tokio-rs/tokio) |
 | toml 1.1.6+spec-1.1.0 | MIT OR Apache-2.0 | [github.com/toml-rs/toml](https://github.com/toml-rs/toml) |
 | toml_datetime 0.6.3 | MIT OR Apache-2.0 | [github.com/toml-rs/toml](https://github.com/toml-rs/toml) |
 | toml_datetime 1.1.1+spec-1.1.0 | MIT OR Apache-2.0 | [github.com/toml-rs/toml](https://github.com/toml-rs/toml) |
@@ -14676,7 +14676,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-This exact text is filed by tokio 1.53.1.
+This exact text is filed by tokio 1.54.1.
 
 ```text
 MIT License
