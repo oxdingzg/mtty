@@ -844,7 +844,7 @@ fn agent_state_label(lang: mtty_ui::i18n::Lang, state: &str) -> &str {
         };
     }
     match state {
-        "processing" => "处理中",
+        "processing" => "进行中",
         "idle" => "空闲",
         "awaiting" => "等待你",
         "error" => "出错",
@@ -854,6 +854,29 @@ fn agent_state_label(lang: mtty_ui::i18n::Lang, state: &str) -> &str {
         "unknown" => "状态未知",
         _ => state,
     }
+}
+
+/// A tab title with the labels the chrome puts in front of its name (ADR
+/// 0011): the agent's state, the tab's group, then its prefix, with the mark
+/// appended. `[state]` and `[group]` lead so a narrow tab strip that cuts the
+/// name still says what the tab is doing and which group it belongs to.
+fn decorated_title(
+    title: &str,
+    state: Option<&str>,
+    group: Option<&str>,
+    prefix: Option<&str>,
+    mark: Option<&str>,
+) -> String {
+    let mut out = title.to_string();
+    for label in [prefix, group, state].into_iter().flatten() {
+        if !label.is_empty() {
+            out = format!("[{label}] {out}");
+        }
+    }
+    if let Some(mark) = mark {
+        out.push_str(mark);
+    }
+    out
 }
 
 /// A short "3m ago" for a millisecond timestamp; empty when unknown.
@@ -1105,6 +1128,45 @@ fn take_tabs_below(tabs: &mut Vec<Tab>, i: usize) -> Vec<Tab> {
         return Vec::new();
     }
     tabs.split_off(i + 1)
+}
+
+/// Where index `i` lands after the element at `from` moves to `to`.
+fn moved_index(i: usize, from: usize, to: usize) -> usize {
+    if i == from {
+        to
+    } else if from < to && i > from && i <= to {
+        i - 1
+    } else if to < from && i >= to && i < from {
+        i + 1
+    } else {
+        i
+    }
+}
+
+/// Keep a group's tabs together: a tab that joined a group moves next to the
+/// last tab already carrying that name, so the divider marks a visible block
+/// (ADR 0011). An ungrouped tab stays where it is.
+fn join_group_of(tabs: &mut Vec<Tab>, active: &mut usize, from: usize) {
+    let Some(group) = tabs.get(from).and_then(|tab| tab.group.clone()) else {
+        return;
+    };
+    let Some(last) = tabs
+        .iter()
+        .enumerate()
+        .filter(|(j, tab)| *j != from && tab.group.as_deref() == Some(group.as_str()))
+        .map(|(j, _)| j)
+        .max()
+    else {
+        return;
+    };
+    // Land immediately after the last member, whichever side it is on.
+    let to = if from < last { last } else { last + 1 };
+    if from == to {
+        return;
+    }
+    *active = moved_index(*active, from, to);
+    let tab = tabs.remove(from);
+    tabs.insert(to, tab);
 }
 
 /// The directory a new tab or split starts in: the active pane's, unless that
@@ -3829,6 +3891,58 @@ impl State {
             .unwrap_or_else(|| tab.title.clone())
     }
 
+    /// The state word the tab's active pane reports, unless `[badges]` turns
+    /// that state off. Words match the details panel's Agent state row.
+    fn agent_status_text(&self, tab: &Tab) -> Option<String> {
+        let agent = self.mtp.agent_for(&tab.active)?;
+        let state = agent
+            .get("state")
+            .and_then(|state| state.as_str())
+            .filter(|state| !state.is_empty())?;
+        (!switched_off(&self.badges, state))
+            .then(|| agent_state_label(self.lang, state).to_string())
+    }
+
+    /// The title the chrome shows for a tab: its agent state, group and prefix
+    /// in front of the pane's own name, then its mark, a view rule's badge and
+    /// the attention marker (ADR 0011).
+    fn chrome_title(&self, tab: &Tab, view: Option<mtty_config::view::Resolved>) -> String {
+        let status = self.agent_status_text(tab);
+        let mut title = decorated_title(
+            &self.title_with(tab, view.clone()),
+            status.as_deref(),
+            tab.group.as_deref(),
+            tab.prefix.as_deref(),
+            tab.mark.as_deref(),
+        );
+        if let Some(badge) = view
+            .and_then(|view| view.badge)
+            .filter(|b| !b.trim().is_empty())
+        {
+            title = format!("{title} \u{00b7} {badge}");
+        }
+        // An agent's tab shows that it finished by its icon.
+        if let Some(attention) = tab
+            .attention
+            .filter(|attention| status.is_none() || *attention != Attention::Done)
+        {
+            title.push_str(attention.marker());
+        }
+        title
+    }
+
+    /// The distinct group names in use, in tab order, for the group dialog's
+    /// one-click list.
+    fn group_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for group in self.tabs.iter().filter_map(|tab| tab.group.as_ref()) {
+            if !group.is_empty() && !names.contains(group) {
+                names.push(group.clone());
+            }
+        }
+        names
+    }
+
     /// Keep terminal control independent of painting: occluded/minimized
     /// windows still accept MTP input, commands, and session housekeeping.
     fn poll_control_plane(&mut self) {
@@ -3924,11 +4038,12 @@ impl State {
         self.poll_details();
         self.ensure_details();
 
-        // Sync the window title from the active pane's OSC 0/2.
+        // Sync the window title from the active tab, with the same state and
+        // group labels the tab strip shows.
         let title = self
             .tabs
             .get(self.active_tab)
-            .map(|t| self.title_of(t))
+            .map(|tab| self.chrome_title(tab, self.view_for(tab)))
             .filter(|s| !s.is_empty());
         if title != self.last_title {
             if let Some(t) = &title {
@@ -4967,14 +5082,33 @@ impl State {
         if let Some(i) = self.mark_renaming {
             let mut buf = std::mem::take(&mut self.mark_buf);
             let mut slot = self.mark_renaming;
-            self.tab_text_window(ctx, i, "Tab Mark", "标签标记", &mut buf, &mut slot, false);
+            self.tab_text_window(
+                ctx,
+                i,
+                "Tab Mark",
+                "标签标记",
+                &mut buf,
+                &mut slot,
+                false,
+                &[],
+            );
             self.mark_buf = buf;
             self.mark_renaming = slot;
         }
         if let Some(i) = self.group_renaming {
             let mut buf = std::mem::take(&mut self.group_buf);
             let mut slot = self.group_renaming;
-            self.tab_text_window(ctx, i, "Tab Group", "标签分组", &mut buf, &mut slot, true);
+            let choices = self.group_names();
+            self.tab_text_window(
+                ctx,
+                i,
+                "Tab Group",
+                "标签分组",
+                &mut buf,
+                &mut slot,
+                true,
+                &choices,
+            );
             self.group_buf = buf;
             self.group_renaming = slot;
         }
@@ -16106,6 +16240,7 @@ impl State {
         buf: &mut String,
         slot: &mut Option<usize>,
         is_group: bool,
+        choices: &[String],
     ) {
         let mut open = true;
         let mut text = std::mem::take(buf);
@@ -16130,6 +16265,20 @@ impl State {
                 {
                     commit = true;
                 }
+                // Joining an existing group is one click: typing a name that
+                // already exists was the only way to do it, and a typo made a
+                // new group instead of joining the one on screen.
+                if is_group && !choices.is_empty() {
+                    ui.add_space(4.0);
+                    ui.label(mtty_ui::i18n::t(self.lang, "Existing groups", "现有分组"));
+                    ui.horizontal_wrapped(|ui| {
+                        for name in choices {
+                            if ui.small_button(name).clicked() {
+                                text = name.clone();
+                            }
+                        }
+                    });
+                }
             });
         *buf = text;
         if commit {
@@ -16141,6 +16290,9 @@ impl State {
                 } else {
                     t.mark = value;
                 }
+            }
+            if is_group {
+                join_group_of(&mut self.tabs, &mut self.active_tab, i);
             }
             *slot = None;
             self.publish_panes();
@@ -19783,24 +19935,7 @@ impl chrome::Chrome for State {
                         .map(|c| mtty_ui::theme::Rgb(c.0, c.1, c.2))
                         .or(icon.color);
                 }
-                let rule_badge = view.as_ref().and_then(|v| v.badge.clone());
-                let mut title = self.title_with(t, view);
-                if let Some(p) = &t.prefix {
-                    title = format!("[{p}] {title}");
-                }
-                if let Some(m) = &t.mark {
-                    title = format!("{title}{m}");
-                }
-                if let Some(b) = rule_badge.filter(|b| !b.trim().is_empty()) {
-                    title = format!("{title} \u{00b7} {b}");
-                }
-                // An agent's tab shows that it finished by its icon.
-                if let Some(a) = t
-                    .attention
-                    .filter(|a| agent.is_none() || *a != Attention::Done)
-                {
-                    title.push_str(a.marker());
-                }
+                let title = self.chrome_title(t, view);
                 chrome::ChromeTab {
                     title,
                     badge: None,
@@ -21487,6 +21622,61 @@ mod tests {
     }
 
     #[test]
+    fn tab_titles_lead_with_state_then_group_then_prefix() {
+        assert_eq!(
+            decorated_title(
+                "miao | 修复分组",
+                Some("进行中"),
+                Some("work"),
+                Some("dev"),
+                Some("★")
+            ),
+            "[进行中] [work] [dev] miao | 修复分组★"
+        );
+        // An ungrouped shell keeps the plain title.
+        assert_eq!(
+            decorated_title("shell 1", None, None, None, None),
+            "shell 1"
+        );
+        assert_eq!(
+            decorated_title("shell 1", None, Some("work"), None, None),
+            "[work] shell 1"
+        );
+    }
+
+    #[test]
+    fn joining_a_group_keeps_its_tabs_together() {
+        let mut tabs = vec![
+            empty_tab("a"),
+            empty_tab("b"),
+            empty_tab("c"),
+            empty_tab("d"),
+        ];
+        tabs[0].group = Some("work".into());
+        tabs[2].group = Some("work".into());
+        tabs[1].group = Some("work".into());
+        let mut active = 1;
+        join_group_of(&mut tabs, &mut active, 1);
+        let order: Vec<_> = tabs.iter().map(|tab| tab.title.as_str()).collect();
+        assert_eq!(order, vec!["a", "c", "b", "d"]);
+        assert_eq!(active, 2, "the moved tab keeps the focus");
+
+        // A tab that is not in a group does not move.
+        let mut tabs = vec![empty_tab("a"), empty_tab("b")];
+        let mut active = 0;
+        join_group_of(&mut tabs, &mut active, 1);
+        let order: Vec<_> = tabs.iter().map(|tab| tab.title.as_str()).collect();
+        assert_eq!(order, vec!["a", "b"]);
+
+        // The first tab of a group has no member to join and stays put.
+        let mut tabs = vec![empty_tab("a"), empty_tab("b")];
+        tabs[0].group = Some("work".into());
+        let mut active = 0;
+        join_group_of(&mut tabs, &mut active, 0);
+        assert_eq!(tabs[0].title, "a");
+    }
+
+    #[test]
     fn details_words_are_translated_and_data_is_kept() {
         use mtty_ui::i18n::Lang;
         assert_eq!(
@@ -21497,7 +21687,7 @@ mod tests {
         assert_eq!(localize_detail(Lang::En, "Directory"), "Directory");
         assert_eq!(localize_detail(Lang::Zh, "tty"), "终端设备");
         assert_eq!(agent_state_label(Lang::Zh, "awaiting"), "等待你");
-        assert_eq!(agent_state_label(Lang::Zh, "processing"), "处理中");
+        assert_eq!(agent_state_label(Lang::Zh, "processing"), "进行中");
         assert_eq!(agent_state_label(Lang::En, "idle"), "Idle");
         assert_eq!(agent_state_label(Lang::En, "unknown"), "Status unavailable");
         assert_eq!(
