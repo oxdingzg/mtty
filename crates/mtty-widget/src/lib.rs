@@ -857,18 +857,17 @@ fn agent_state_label(lang: mtty_ui::i18n::Lang, state: &str) -> &str {
 }
 
 /// A tab title with the labels the chrome puts in front of its name (ADR
-/// 0011): the agent's state, the tab's group, then its prefix, with the mark
-/// appended. `[state]` and `[group]` lead so a narrow tab strip that cuts the
-/// name still says what the tab is doing and which group it belongs to.
+/// 0011): the tab's group, then its prefix, with the mark appended. The
+/// agent's state stays the tab's icon, not a word: a narrow strip that cuts
+/// the name still says which group the tab belongs to.
 fn decorated_title(
     title: &str,
-    state: Option<&str>,
     group: Option<&str>,
     prefix: Option<&str>,
     mark: Option<&str>,
 ) -> String {
     let mut out = title.to_string();
-    for label in [prefix, group, state].into_iter().flatten() {
+    for label in [prefix, group].into_iter().flatten() {
         if !label.is_empty() {
             out = format!("[{label}] {out}");
         }
@@ -3891,26 +3890,24 @@ impl State {
             .unwrap_or_else(|| tab.title.clone())
     }
 
-    /// The state word the tab's active pane reports, unless `[badges]` turns
-    /// that state off. Words match the details panel's Agent state row.
-    fn agent_status_text(&self, tab: &Tab) -> Option<String> {
+    /// The state the tab's active pane reports, unless `[badges]` turns that
+    /// state off. The tab's icon is what shows it.
+    fn agent_state(&self, tab: &Tab) -> Option<String> {
         let agent = self.mtp.agent_for(&tab.active)?;
         let state = agent
             .get("state")
             .and_then(|state| state.as_str())
             .filter(|state| !state.is_empty())?;
-        (!switched_off(&self.badges, state))
-            .then(|| agent_state_label(self.lang, state).to_string())
+        (!switched_off(&self.badges, state)).then(|| state.to_string())
     }
 
-    /// The title the chrome shows for a tab: its agent state, group and prefix
-    /// in front of the pane's own name, then its mark, a view rule's badge and
-    /// the attention marker (ADR 0011).
+    /// The title the chrome shows for a tab: its group and prefix in front of
+    /// the pane's own name, then its mark, a view rule's badge and the
+    /// attention marker (ADR 0011).
     fn chrome_title(&self, tab: &Tab, view: Option<mtty_config::view::Resolved>) -> String {
-        let status = self.agent_status_text(tab);
+        let state = self.agent_state(tab);
         let mut title = decorated_title(
             &self.title_with(tab, view.clone()),
-            status.as_deref(),
             tab.group.as_deref(),
             tab.prefix.as_deref(),
             tab.mark.as_deref(),
@@ -3924,7 +3921,7 @@ impl State {
         // An agent's tab shows that it finished by its icon.
         if let Some(attention) = tab
             .attention
-            .filter(|attention| status.is_none() || *attention != Attention::Done)
+            .filter(|attention| state.is_none() || *attention != Attention::Done)
         {
             title.push_str(attention.marker());
         }
@@ -21622,24 +21619,15 @@ mod tests {
     }
 
     #[test]
-    fn tab_titles_lead_with_state_then_group_then_prefix() {
+    fn tab_titles_lead_with_the_group_then_the_prefix() {
         assert_eq!(
-            decorated_title(
-                "miao | 修复分组",
-                Some("进行中"),
-                Some("work"),
-                Some("dev"),
-                Some("★")
-            ),
-            "[进行中] [work] [dev] miao | 修复分组★"
+            decorated_title("miao | 修复分组", Some("work"), Some("dev"), Some("★")),
+            "[work] [dev] miao | 修复分组★"
         );
         // An ungrouped shell keeps the plain title.
+        assert_eq!(decorated_title("shell 1", None, None, None), "shell 1");
         assert_eq!(
-            decorated_title("shell 1", None, None, None, None),
-            "shell 1"
-        );
-        assert_eq!(
-            decorated_title("shell 1", None, Some("work"), None, None),
+            decorated_title("shell 1", Some("work"), None, None),
             "[work] shell 1"
         );
     }
