@@ -43,7 +43,6 @@ pub struct TabBarEvents {
     pub close_below: Option<usize>,
     pub move_up: Option<usize>,
     pub move_down: Option<usize>,
-    pub set_prefix: Option<usize>,
     pub new_tab: bool,
     /// Where each tab chip was drawn, in tab order: stable targets for
     /// replayed-input tests and accessibility tooling.
@@ -55,7 +54,6 @@ pub struct TabBarEvents {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TabMenuAction {
     Rename,
-    Prefix,
     Mark,
     Group,
     Ungroup,
@@ -75,7 +73,6 @@ pub fn tab_menu_items(lang: Lang) -> Vec<(&'static str, Option<TabMenuAction>)> 
             t(lang, "Rename Tab…", "重命名标签…"),
             Some(TabMenuAction::Rename),
         ),
-        (t(lang, "Prefix…", "前缀…"), Some(TabMenuAction::Prefix)),
         (t(lang, "Mark…", "标记…"), Some(TabMenuAction::Mark)),
         (t(lang, "Group…", "分组…"), Some(TabMenuAction::Group)),
         (
@@ -108,7 +105,6 @@ pub fn tab_menu_items(lang: Lang) -> Vec<(&'static str, Option<TabMenuAction>)> 
 pub fn apply_tab_menu(ev: &mut TabBarEvents, i: usize, action: TabMenuAction) {
     match action {
         TabMenuAction::Rename => ev.rename = Some(i),
-        TabMenuAction::Prefix => ev.set_prefix = Some(i),
         TabMenuAction::Mark => ev.mark = Some(i),
         TabMenuAction::Group => ev.group = Some(i),
         TabMenuAction::Ungroup => ev.ungroup = Some(i),
@@ -962,7 +958,6 @@ pub trait Chrome {
     fn on_close_others(&mut self, i: usize) {}
     fn on_close_below(&mut self, i: usize) {}
     fn on_move_tab(&mut self, i: usize, delta: i32) {}
-    fn on_set_prefix(&mut self, i: usize) {}
     fn on_font_delta(&mut self, delta: f32) {}
     fn on_toggle_sidebar(&mut self) {}
     fn on_toggle_details(&mut self) {}
@@ -1117,7 +1112,6 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
     let mut close_below = None;
     let mut move_up = None;
     let mut move_down = None;
-    let mut set_prefix = None;
     let mut mark_tab = None;
     let mut group_tab = None;
     let mut ungroup_tab = None;
@@ -1252,7 +1246,6 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
                 close_below = ev.close_below.or(close_below);
                 move_up = ev.move_up.or(move_up);
                 move_down = ev.move_down.or(move_down);
-                set_prefix = ev.set_prefix.or(set_prefix);
                 mark_tab = ev.mark.or(mark_tab);
                 group_tab = ev.group.or(group_tab);
                 ungroup_tab = ev.ungroup.or(ungroup_tab);
@@ -1419,7 +1412,6 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
                 close_below = ev.close_below;
                 move_up = ev.move_up;
                 move_down = ev.move_down;
-                set_prefix = ev.set_prefix;
                 mark_tab = ev.mark;
                 group_tab = ev.group;
                 ungroup_tab = ev.ungroup;
@@ -1591,9 +1583,6 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
     if let Some(i) = move_down {
         host.on_move_tab(i, 1);
     }
-    if let Some(i) = set_prefix {
-        host.on_set_prefix(i);
-    }
     if let Some(i) = mark_tab {
         host.on_mark_tab(i);
     }
@@ -1660,7 +1649,6 @@ mod tab_menu_tests {
             labels,
             vec![
                 "Rename Tab…",
-                "Prefix…",
                 "Mark…",
                 "Group…",
                 "Remove from Group",
@@ -1677,7 +1665,6 @@ mod tab_menu_tests {
             actions(Lang::En),
             vec![
                 TabMenuAction::Rename,
-                TabMenuAction::Prefix,
                 TabMenuAction::Mark,
                 TabMenuAction::Group,
                 TabMenuAction::Ungroup,
@@ -1722,8 +1709,6 @@ mod tab_menu_tests {
         assert_eq!(ev.move_up, Some(1));
         apply_tab_menu(&mut ev, 0, TabMenuAction::MoveDown);
         assert_eq!(ev.move_down, Some(0));
-        apply_tab_menu(&mut ev, 4, TabMenuAction::Prefix);
-        assert_eq!(ev.set_prefix, Some(4));
         apply_tab_menu(&mut ev, 4, TabMenuAction::Rename);
         assert_eq!(ev.rename, Some(4));
         apply_tab_menu(&mut ev, 4, TabMenuAction::Duplicate);
@@ -1767,7 +1752,7 @@ mod tab_menu_tests {
                 .enumerate()
                 .filter_map(|(i, (_, action))| action.is_none().then_some(i))
                 .collect();
-            assert_eq!(separators, vec![6, 9, 11]);
+            assert_eq!(separators, vec![5, 8, 10]);
             for (_, action) in entries {
                 if let Some(action) = action {
                     assert!(tab_menu_action_visible(action, true));

@@ -210,7 +210,7 @@ Use Alacritty's proven model (`FairMutex<Term>` + `EventListener`); do not inven
 
 - Model: `Window → Tab[] → SplitTree<Surface>`; a surface is one terminal instance (core + render view).
 - Window: one OS window holds a set of tabs; splits are a tree inside a tab (ours, not OS tabs).
-- Panels (egui): **left Tabs sidebar** (title/⌘N/prefix/mark/dividers/context menu), **right Details**
+- Panels (egui): **left Tabs sidebar** (title/⌘N/mark/dividers/context menu), **right Details**
   (Info/Outline/Git/Files), badges, settings, command palette.
 - Unified chrome: panels share the terminal background, no divider line, hover highlight.
 - OS integration: hook install, URL open, notifications, sleep inhibition (per-platform).

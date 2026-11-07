@@ -4,22 +4,21 @@ Status: accepted.
 
 ## Context
 
-Roadmap U1 asks for richer tabs (prefix/mark/divider/group) and a browsable
+Roadmap U1 asks for richer tabs (mark/divider/group) and a browsable
 sidebar; U7 asks to save and replay a workspace (*recipes*) and to export
 config. These are all small, local additions on top of the existing tab/session
 model.
 
 ## Decision
 
-**Tab appearance (U1).** A tab gains three optional fields — `prefix` (before
-the title), `mark` (after it) and `group`. The tab bar draws a vertical divider
-wherever the group changes, so tabs of one group sit together. All three are set
-from the sidebar context menu (Rename / Prefix / Mark / Group, plus *Remove from
-Group*) through one dialog keyed by `TabField`, and they round-trip through
-`session.json` as `#[serde(default)]` fields (older sessions load unchanged).
-The state stays the tab's icon; the title names the group and the prefix
-(`[work] [dev] title★`), so a narrow tab strip still says where the tab
-belongs. A tab that joins a group moves next to the last tab carrying that
+**Tab appearance (U1).** A tab gains two optional fields — `mark` (after the
+title) and `group`. The tab bar draws a vertical divider wherever the group
+changes, so tabs of one group sit together. Both are set from the sidebar
+context menu (Rename / Mark / Group, plus *Remove from Group*) through one
+dialog keyed by `TabField`, and they round-trip through `session.json` as
+`#[serde(default)]` fields (older sessions load unchanged).
+The state stays the tab's icon; the title names the group (`[work]
+title★`), so a narrow tab strip still says where the tab belongs. A tab that joins a group moves next to the last tab carrying that
 name, and the Group dialog lists the groups already in use so joining one is a
 click rather than a retyped name.
 
@@ -38,7 +37,7 @@ views.json*.
 
 ## Consequences
 
-- Grouping/prefix/mark are pure presentation and serialized with defaults, so no
+- Grouping/mark are pure presentation and serialized with defaults, so no
   migration is needed.
 - Recipes reuse the session format, so anything that can be restored at startup
   can be saved and replayed.

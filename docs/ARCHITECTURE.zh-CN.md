@@ -189,7 +189,7 @@
 
 - 模型:`Window → Tab[] → SplitTree<Surface>`;surface = 一个终端实例(core+render 视图)。
 - 窗口:一个 OS 窗口承载一个 tab 集;分屏是 tab 内的树(自研,非 OS 标签)。
-- 面板(egui):**左 Tabs 侧栏**(标题/⌘N/前缀/标记/分隔线/右键菜单)、**右 Details**(Info/Outline/Git/Files)、徽章、设置、命令面板。
+- 面板(egui):**左 Tabs 侧栏**(标题/⌘N/标记/分隔线/右键菜单)、**右 Details**(Info/Outline/Git/Files)、徽章、设置、命令面板。
 - 统一外框观感:面板与终端同背景、无分隔线、hover 高亮。
 - 系统集成:hook 安装、URL 打开、通知、防休眠(平台分支)。
 

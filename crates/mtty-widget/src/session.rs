@@ -147,7 +147,7 @@ mod tests {
     #[test]
     fn migrates_indexed_splits_focus_and_tab_decorations() {
         let old = json!({"active": 1, "recent_files": ["note.txt"], "tabs": [{
-            "title": "work", "prefix": "dev", "mark": "★", "group": "project",
+            "title": "work", "mark": "★", "group": "project",
             "panes": [{"cwd": "/tmp"}, {"cwd": "/"}, {"cwd": null}], "active": 2,
             "layout": {"Split": {"down": false, "ratio": 0.3, "a": {"Leaf": 0},
                 "b": {"Split": {"down": true, "ratio": 0.7, "a": {"Leaf": 1}, "b": {"Leaf": 2}}}}}

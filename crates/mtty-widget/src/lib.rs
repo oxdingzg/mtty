@@ -607,8 +607,6 @@ struct Tab {
     ssh_cmd: Option<String>,
     /// A serial, Telnet or raw TCP session (ADR 0037); `None` for a shell.
     transport: Option<TransportTarget>,
-    /// Optional short prefix shown before the tab title.
-    prefix: Option<String>,
     /// A short user marker appended to the tab title (ADR 0011).
     mark: Option<String>,
     /// The session-list group this tab belongs to (ADR 0011).
@@ -737,7 +735,7 @@ impl Tab {
             "title": self.title, "active": self.active,
             "layout": layout_to_json(&self.layout), "panes": panes, "editors": editors,
             "previews": previews,
-            "prefix": self.prefix, "mark": self.mark, "group": self.group,
+            "mark": self.mark, "group": self.group,
             "title_set": self.title_set,
             "ssh": self.ssh, "ssh_target": self.ssh_target, "ssh_cmd": self.ssh_cmd,
             "transport": self.transport,
@@ -746,7 +744,6 @@ impl Tab {
 
     fn restore_decorations(&mut self, value: &serde_json::Value) {
         let text = |key| value.get(key).and_then(|v| v.as_str()).map(str::to_string);
-        self.prefix = text("prefix");
         self.mark = text("mark");
         self.group = text("group");
     }
@@ -857,17 +854,12 @@ fn agent_state_label(lang: mtty_ui::i18n::Lang, state: &str) -> &str {
 }
 
 /// A tab title with the labels the chrome puts in front of its name (ADR
-/// 0011): the tab's group, then its prefix, with the mark appended. The
-/// agent's state stays the tab's icon, not a word: a narrow strip that cuts
-/// the name still says which group the tab belongs to.
-fn decorated_title(
-    title: &str,
-    group: Option<&str>,
-    prefix: Option<&str>,
-    mark: Option<&str>,
-) -> String {
+/// 0011): the tab's group, with the mark appended. The agent's state stays
+/// the tab's icon, not a word: a narrow strip that cuts the name still says
+/// which group the tab belongs to.
+fn decorated_title(title: &str, group: Option<&str>, mark: Option<&str>) -> String {
     let mut out = title.to_string();
-    for label in [prefix, group].into_iter().flatten() {
+    for label in [group].into_iter().flatten() {
         if !label.is_empty() {
             out = format!("[{label}] {out}");
         }
@@ -2192,8 +2184,6 @@ struct State {
     /// Directories being listed in the background.
     tree_loading: std::collections::HashSet<std::path::PathBuf>,
     files_filter: String,
-    prefix_renaming: Option<usize>,
-    prefix_buf: String,
     mark_renaming: Option<usize>,
     mark_buf: String,
     group_renaming: Option<usize>,
@@ -2866,7 +2856,6 @@ impl State {
             ssh_target: None,
             ssh_cmd: None,
             transport: None,
-            prefix: None,
             mark: None,
             group: None,
             attention: None,
@@ -2936,7 +2925,6 @@ impl State {
             ssh_target: None,
             ssh_cmd: None,
             transport: None,
-            prefix: None,
             mark: None,
             group: None,
             attention: None,
@@ -3410,7 +3398,7 @@ impl State {
 
     fn duplicate_tab(&mut self) {
         let cwd = self.cwd();
-        let (title_set, title, ssh, transport, (target, ssh_cmd), prefix, mark, group) = self
+        let (title_set, title, ssh, transport, (target, ssh_cmd), mark, group) = self
             .tabs
             .get(self.active_tab)
             .map(|t| {
@@ -3420,7 +3408,6 @@ impl State {
                     t.ssh,
                     t.transport.clone(),
                     (t.ssh_target.clone(), t.ssh_cmd.clone()),
-                    t.prefix.clone(),
                     t.mark.clone(),
                     t.group.clone(),
                 )
@@ -3444,7 +3431,6 @@ impl State {
                 t.title = title;
                 t.title_set = true;
             }
-            t.prefix = prefix;
             t.mark = mark;
             t.group = group;
         }
@@ -3901,15 +3887,14 @@ impl State {
         (!switched_off(&self.badges, state)).then(|| state.to_string())
     }
 
-    /// The title the chrome shows for a tab: its group and prefix in front of
-    /// the pane's own name, then its mark, a view rule's badge and the
-    /// attention marker (ADR 0011).
+    /// The title the chrome shows for a tab: its group in front of the pane's
+    /// own name, then its mark, a view rule's badge and the attention marker
+    /// (ADR 0011).
     fn chrome_title(&self, tab: &Tab, view: Option<mtty_config::view::Resolved>) -> String {
         let state = self.agent_state(tab);
         let mut title = decorated_title(
             &self.title_with(tab, view.clone()),
             tab.group.as_deref(),
-            tab.prefix.as_deref(),
             tab.mark.as_deref(),
         );
         if let Some(badge) = view
@@ -5109,9 +5094,6 @@ impl State {
             self.group_buf = buf;
             self.group_renaming = slot;
         }
-        if let Some(i) = self.prefix_renaming {
-            self.prefix_window(ctx, i);
-        }
     }
     fn details_content(&self, tab: usize) -> (&'static str, Vec<(String, String)>) {
         match tab {
@@ -5614,7 +5596,6 @@ impl State {
                 ssh_target: ssh_target.filter(|_| ssh),
                 ssh_cmd: ssh_cmd.filter(|_| ssh),
                 transport: None,
-                prefix: None,
                 mark: None,
                 group: None,
                 attention: None,
@@ -12008,7 +11989,6 @@ impl State {
             ssh_target: None,
             ssh_cmd: None,
             transport: Some(target),
-            prefix: None,
             mark: None,
             group: None,
             attention: None,
@@ -13981,7 +13961,6 @@ impl State {
                     ssh_target: None,
                     ssh_cmd: None,
                     transport: None,
-                    prefix: None,
                     mark: None,
                     group: None,
                     attention: None,
@@ -14044,7 +14023,6 @@ impl State {
                     ssh_target: None,
                     ssh_cmd: None,
                     transport: None,
-                    prefix: None,
                     mark: None,
                     group: None,
                     attention: None,
@@ -16187,45 +16165,6 @@ impl State {
         self.window.request_redraw();
     }
 
-    fn prefix_window(&mut self, ctx: &egui::Context, i: usize) {
-        let mut open = true;
-        let mut buf = std::mem::take(&mut self.prefix_buf);
-        let mut commit = false;
-        egui::Window::new(mtty_ui::i18n::t(self.lang, "Tab Prefix", "标签前缀"))
-            .collapsible(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                let r = ui.text_edit_singleline(&mut buf);
-                // Check Enter before re-taking focus: Enter makes the field give it up,
-                // and taking it back first would hide that (`lost_focus` stays false).
-                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if !enter {
-                    r.request_focus();
-                }
-                if enter {
-                    commit = true;
-                }
-                if ui
-                    .button(mtty_ui::i18n::t(self.lang, "Set", "设置"))
-                    .clicked()
-                {
-                    commit = true;
-                }
-            });
-        self.prefix_buf = buf;
-        if commit {
-            if let Some(t) = self.tabs.get_mut(i) {
-                let p = self.prefix_buf.trim().to_string();
-                t.prefix = if p.is_empty() { None } else { Some(p) };
-            }
-            self.prefix_renaming = None;
-            self.publish_panes();
-        }
-        if !open {
-            self.prefix_renaming = None;
-        }
-    }
-
     /// A one-line editor for a tab's mark or group (ADR 0011). Empty clears it.
     #[allow(clippy::too_many_arguments)]
     fn tab_text_window(
@@ -17064,8 +17003,6 @@ impl ApplicationHandler<HostEvent> for Host {
             tree_children: HashMap::new(),
             tree_loading: std::collections::HashSet::new(),
             files_filter: String::new(),
-            prefix_renaming: None,
-            prefix_buf: String::new(),
             mark_renaming: None,
             mark_buf: String::new(),
             group_renaming: None,
@@ -20341,14 +20278,6 @@ impl chrome::Chrome for State {
         self.publish_panes();
     }
 
-    fn on_set_prefix(&mut self, i: usize) {
-        self.prefix_buf = self
-            .tabs
-            .get(i)
-            .and_then(|t| t.prefix.clone())
-            .unwrap_or_default();
-        self.prefix_renaming = Some(i);
-    }
     fn on_reorder_tab(&mut self, from: usize, to: usize) {
         if from < self.tabs.len() && to < self.tabs.len() && from != to {
             let was_active = self.active_tab == from;
@@ -21441,7 +21370,6 @@ mod tests {
             ssh_target: None,
             ssh_cmd: None,
             transport: None,
-            prefix: None,
             mark: None,
             group: None,
             attention: None,
@@ -21601,35 +21529,35 @@ mod tests {
     #[test]
     fn tab_decorations_round_trip_and_legacy_defaults() {
         let mut tab = empty_tab("shell");
-        tab.prefix = Some("dev".into());
         tab.mark = Some("★".into());
         tab.group = Some("work".into());
         let encoded = serde_json::to_vec(&tab.session_value()).unwrap();
         let value = serde_json::from_slice(&encoded).unwrap();
         let mut restored = empty_tab("shell");
         restored.restore_decorations(&value);
-        assert_eq!(restored.prefix, tab.prefix);
         assert_eq!(restored.mark, tab.mark);
         assert_eq!(restored.group, tab.group);
         restored.restore_decorations(&serde_json::json!({"title": "legacy"}));
-        assert_eq!(
-            (restored.prefix, restored.mark, restored.group),
-            (None, None, None)
-        );
+        assert_eq!((restored.mark, restored.group), (None, None));
     }
 
     #[test]
-    fn tab_titles_lead_with_the_group_then_the_prefix() {
+    fn tab_titles_lead_with_the_group_and_keep_a_removed_prefix_ignored() {
         assert_eq!(
-            decorated_title("miao | 修复分组", Some("work"), Some("dev"), Some("★")),
-            "[work] [dev] miao | 修复分组★"
+            decorated_title("miao | 修复分组", Some("work"), Some("★")),
+            "[work] miao | 修复分组★"
         );
         // An ungrouped shell keeps the plain title.
-        assert_eq!(decorated_title("shell 1", None, None, None), "shell 1");
+        assert_eq!(decorated_title("shell 1", None, None), "shell 1");
         assert_eq!(
-            decorated_title("shell 1", Some("work"), None, None),
+            decorated_title("shell 1", Some("work"), None),
             "[work] shell 1"
         );
+        // A session saved by an older build still carries `prefix`; it is not
+        // part of the title any more.
+        let mut old = empty_tab("shell");
+        old.restore_decorations(&serde_json::json!({"prefix": "dev", "group": "work"}));
+        assert_eq!(old.group.as_deref(), Some("work"));
     }
 
     #[test]
