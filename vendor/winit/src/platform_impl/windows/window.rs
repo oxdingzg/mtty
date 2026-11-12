@@ -914,7 +914,21 @@ impl Window {
         let state = self.window_state.clone();
         self.thread_executor.execute_in_thread(move || unsafe {
             let scale_factor = state.lock().unwrap().scale_factor;
-            ImeContext::current(window).set_ime_cursor_area(spot, size, scale_factor);
+            let spot_px = spot.to_physical::<i32>(scale_factor);
+            let size_px = size.to_physical::<i32>(scale_factor);
+            // Re-asserting an unchanged anchor makes the IME re-layout its
+            // composition window mid-composition, which visibly jumps the
+            // composition around while the app redraws underneath. Reach IMM
+            // only when the area actually moved.
+            let area = ((spot_px.x, spot_px.y), (size_px.width, size_px.height));
+            {
+                let mut state = state.lock().unwrap();
+                if state.ime_cursor_area == Some(area) {
+                    return;
+                }
+                state.ime_cursor_area = Some(area);
+            }
+            ImeContext::current(window).set_ime_cursor_area(spot_px, size_px);
         });
     }
 
@@ -923,7 +937,12 @@ impl Window {
         let window = self.window;
         let state = self.window_state.clone();
         self.thread_executor.execute_in_thread(move || unsafe {
-            state.lock().unwrap().ime_allowed = allowed;
+            {
+                let mut state = state.lock().unwrap();
+                state.ime_allowed = allowed;
+                // A re-associated IME context forgets the old anchor.
+                state.ime_cursor_area = None;
+            }
             ImeContext::set_ime_allowed(window, allowed);
         })
     }
