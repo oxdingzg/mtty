@@ -46,6 +46,10 @@ pub(crate) struct WindowState {
     pub ime_state: ImeState,
     pub ime_allowed: bool,
 
+    // The last physical ime cursor area sent to IMM, so repeated requests
+    // with the same anchor can skip re-asserting it mid-composition.
+    pub ime_cursor_area: Option<((i32, i32), (i32, i32))>,
+
     // Used by WM_NCACTIVATE, WM_SETFOCUS and WM_KILLFOCUS
     pub is_active: bool,
     pub is_focused: bool,
@@ -169,6 +173,7 @@ impl WindowState {
 
             ime_state: ImeState::Disabled,
             ime_allowed: false,
+            ime_cursor_area: None,
 
             is_active: false,
             is_focused: false,

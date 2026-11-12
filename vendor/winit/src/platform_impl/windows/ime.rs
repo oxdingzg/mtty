@@ -12,7 +12,7 @@ use windows_sys::Win32::UI::Input::Ime::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_IMMENABLED};
 
-use crate::dpi::{Position, Size};
+use crate::dpi::{PhysicalPosition, PhysicalSize};
 use crate::platform::windows::HWND;
 
 pub struct ImeContext {
@@ -112,13 +112,13 @@ impl ImeContext {
         }
     }
 
-    pub unsafe fn set_ime_cursor_area(&self, spot: Position, size: Size, scale_factor: f64) {
+    pub unsafe fn set_ime_cursor_area(&self, spot: PhysicalPosition<i32>, size: PhysicalSize<i32>) {
         if !unsafe { ImeContext::system_has_ime() } {
             return;
         }
 
-        let (x, y) = spot.to_physical::<i32>(scale_factor).into();
-        let (width, height): (i32, i32) = size.to_physical::<i32>(scale_factor).into();
+        let (x, y) = spot.into();
+        let (width, height): (i32, i32) = size.into();
         let rc_area = RECT { left: x, top: y, right: x + width, bottom: y + height };
         let candidate_form = CANDIDATEFORM {
             dwIndex: 0,
