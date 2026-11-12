@@ -157,6 +157,27 @@ pub fn tab_group_boundary(groups: &[Option<String>], i: usize) -> bool {
         && groups.get(i - 1).and_then(|g| g.as_deref()) != groups.get(i).and_then(|g| g.as_deref())
 }
 
+/// The name heading the session section that starts at row `i`: a named
+/// group opens one, including on the first row — unlike the tab bar's
+/// divider, which never leads (ADR 0011). Ungrouped rows open no section.
+pub fn group_header(groups: &[Option<String>], i: usize) -> Option<&str> {
+    let name = groups.get(i).and_then(|g| g.as_deref())?;
+    let before = if i > 0 {
+        groups.get(i - 1).and_then(|g| g.as_deref())
+    } else {
+        None
+    };
+    (before != Some(name)).then_some(name)
+}
+
+/// A session row's label: the group names the section the row sits in, so
+/// the row drops the `[group] ` prefix the tab strip keeps (ADR 0011).
+pub fn group_row_label<'a>(title: &'a str, group: Option<&str>) -> &'a str {
+    group
+        .and_then(|name| title.strip_prefix(&format!("[{name}] ")))
+        .unwrap_or(title)
+}
+
 /// The sidebar's saved hosts, grouped; a click asks to connect.
 pub fn host_list(
     ui: &mut egui::Ui,
@@ -445,8 +466,21 @@ pub fn sidebar(
     let meta_font = egui::FontId::proportional(10.5);
     let mut rects: Vec<egui::Rect> = Vec::with_capacity(titles.len());
     for (i, title) in titles.iter().enumerate() {
-        // The tab bar's group divider, laid horizontally (ADR 0011).
-        if tab_group_boundary(groups, i) {
+        let group = groups.get(i).and_then(|g| g.as_deref());
+        // A named group opens a section: its name heads the rows that
+        // follow, and those rows indent under it. Only the change into the
+        // ungrouped tail keeps the tab bar's thin divider (ADR 0011).
+        if let Some(name) = group_header(groups, i) {
+            let (r, _) = ui
+                .allocate_exact_size(egui::vec2(ui.available_width(), 18.0), egui::Sense::hover());
+            ui.painter().text(
+                egui::pos2(r.left() + 12.0, r.center().y),
+                egui::Align2::LEFT_CENTER,
+                name,
+                meta_font.clone(),
+                bg_color(ch.muted),
+            );
+        } else if tab_group_boundary(groups, i) {
             let (r, _) =
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), 7.0), egui::Sense::hover());
             ui.painter().hline(
@@ -455,6 +489,7 @@ pub fn sidebar(
                 egui::Stroke::new(1.0_f32, bg_color(ch.border)),
             );
         }
+        let indent = if group.is_some() { 12.0 } else { 0.0 };
         // One painted row (icon, badge, title, shortcut) so the whole row can
         // be clicked and dragged, like the tab bar's chips.
         let (rect, resp) = ui.allocate_exact_size(
@@ -474,13 +509,13 @@ pub fn sidebar(
             .cloned()
             .unwrap_or_else(|| crate::icons::Icon::Terminal.into());
         let ir = egui::Rect::from_center_size(
-            egui::pos2(rect.left() + 12.0, rect.center().y),
+            egui::pos2(rect.left() + 12.0 + indent, rect.center().y),
             egui::Vec2::splat(14.0),
         );
         draw_tab_indicator(ui, ir, &icon, text_color, i);
         if let Some(c) = badges.get(i).copied().flatten() {
             ui.painter().circle_filled(
-                egui::pos2(rect.left() + 26.0, rect.center().y),
+                egui::pos2(rect.left() + 26.0 + indent, rect.center().y),
                 3.0,
                 bg_color(c),
             );
@@ -500,16 +535,17 @@ pub fn sidebar(
         } else {
             meta.as_ref().map_or(0.0, |g| g.size().x + 8.0)
         };
-        let text_left = rect.left() + 34.0;
+        let text_left = rect.left() + 34.0 + indent;
+        let label = group_row_label(title, group);
         let title_room = (rect.right() - 6.0 - meta_w - text_left).max(8.0);
         let mut job =
-            egui::text::LayoutJob::simple_singleline(title.clone(), font.clone(), text_color);
+            egui::text::LayoutJob::simple_singleline(label.to_owned(), font.clone(), text_color);
         job.wrap = egui::text::TextWrapping::truncate_at_width(title_room);
         let galley = ui.painter().layout_job(job);
         let truncated = galley.rows.first().is_some_and(|r| r.ends_with_newline)
             || ui
                 .painter()
-                .layout_no_wrap(title.clone(), font.clone(), text_color)
+                .layout_no_wrap(label.to_owned(), font.clone(), text_color)
                 .size()
                 .x
                 > title_room;
@@ -565,9 +601,9 @@ pub fn sidebar(
             .collect::<Vec<_>>()
             .join("\n");
         let resp = match (details.is_empty(), truncated) {
-            (false, true) => resp.on_hover_text(format!("{title}\n{details}")),
+            (false, true) => resp.on_hover_text(format!("{label}\n{details}")),
             (false, false) => resp.on_hover_text(details),
-            (true, true) => resp.on_hover_text(title),
+            (true, true) => resp.on_hover_text(label),
             (true, false) => resp,
         };
         if ev.close != Some(i) && resp.clicked() {
@@ -1744,6 +1780,34 @@ mod tab_menu_tests {
     }
 
     #[test]
+    fn group_headers_name_every_section_start() {
+        let groups = vec![
+            Some("a".into()),
+            Some("a".into()),
+            None,
+            Some("b".into()),
+            Some("b".into()),
+        ];
+        let headers: Vec<_> = (0..groups.len())
+            .filter_map(|i| group_header(&groups, i))
+            .collect();
+        assert_eq!(headers, vec!["a", "b"]);
+        assert_eq!(group_header(&[None, Some("a".into())], 0), None);
+        assert_eq!(group_header(&[], 0), None);
+    }
+
+    #[test]
+    fn session_rows_drop_their_own_group_prefix() {
+        assert_eq!(group_row_label("[miao] shell★", Some("miao")), "shell★");
+        assert_eq!(group_row_label("[miao] shell", None), "[miao] shell");
+        assert_eq!(
+            group_row_label("[miao] shell", Some("work")),
+            "[miao] shell"
+        );
+        assert_eq!(group_row_label("plain", Some("miao")), "plain");
+    }
+
+    #[test]
     fn menu_visibility_and_separator_positions() {
         for lang in [Lang::En, Lang::Zh] {
             let entries = tab_menu_items(lang);
@@ -2410,9 +2474,9 @@ mod tab_menu_tests {
     }
 
     #[test]
-    fn grouped_session_list_paints_horizontal_dividers() {
+    fn grouped_session_list_paints_section_headers() {
         let ctx = test_ctx();
-        let dividers = |groups: &[Option<String>]| {
+        let painted = |groups: &[Option<String>]| {
             sidebar_frame(&ctx, groups, vec![]);
             let (ev, output) = sidebar_frame(&ctx, groups, vec![]);
             let lines: Vec<f32> = output
@@ -2428,13 +2492,37 @@ mod tab_menu_tests {
                     _ => None,
                 })
                 .collect();
-            (ev.tab_rects, lines)
+            let headers: Vec<(String, f32)> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| match &shape.shape {
+                    egui::Shape::Text(text) => Some((text.galley.text().to_owned(), text.pos.y)),
+                    _ => None,
+                })
+                .collect();
+            (ev.tab_rects, lines, headers)
         };
         // The heading's separator is one horizontal line already.
-        let (_, plain) = dividers(&[None, None, None]);
-        let (rects, grouped) = dividers(&[Some("a".into()), Some("a".into()), Some("b".into())]);
-        assert_eq!(grouped.len(), plain.len() + 1, "{grouped:?} vs {plain:?}");
-        let divider = grouped
+        let (_, plain, plain_headers) = painted(&[None, None, None]);
+        // Every named group heads its rows with the group's name — including
+        // the first — and paints no extra divider.
+        let (rects, grouped, headers) =
+            painted(&[Some("a".into()), Some("a".into()), Some("b".into())]);
+        assert!(headers.iter().any(|(s, _)| s == "a"));
+        assert!(headers.iter().any(|(s, _)| s == "b"));
+        assert_eq!(grouped.len(), plain.len(), "{grouped:?} vs {plain:?}");
+        assert_eq!(plain_headers.len() + 2, headers.len());
+        let header = headers
+            .iter()
+            .find(|(s, _)| s == "b")
+            .map(|(_, y)| *y)
+            .unwrap();
+        assert!(rects[1].bottom() <= header && header <= rects[2].top());
+        // Leaving to the ungrouped tail keeps the tab bar's thin divider.
+        let (rects, leaving, headers) = painted(&[Some("a".into()), Some("a".into()), None]);
+        assert!(headers.iter().any(|(s, _)| s == "a"));
+        assert_eq!(leaving.len(), plain.len() + 1, "{leaving:?} vs {plain:?}");
+        let divider = leaving
             .iter()
             .find(|y| !plain.contains(y))
             .copied()

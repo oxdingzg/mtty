@@ -18,7 +18,10 @@ context menu (Rename / Mark / Group, plus *Remove from Group*) through one
 dialog keyed by `TabField`, and they round-trip through `session.json` as
 `#[serde(default)]` fields (older sessions load unchanged).
 The state stays the tab's icon; the title names the group (`[work]
-title★`), so a narrow tab strip still says where the tab belongs. A tab that joins a group moves next to the last tab carrying that
+title★`), so a narrow tab strip still says where the tab belongs. The
+sidebar reads better as sections: each group's rows sit under a heading
+with the group's name and drop the prefix from their labels, while the
+tab strip keeps the prefixed title. A tab that joins a group moves next to the last tab carrying that
 name, and the Group dialog lists the groups already in use so joining one is a
 click rather than a retyped name.
 
