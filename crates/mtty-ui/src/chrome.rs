@@ -2496,9 +2496,7 @@ mod tab_menu_tests {
                 .shapes
                 .iter()
                 .filter_map(|shape| match &shape.shape {
-                    egui::Shape::Text { pos, galley, .. } => {
-                        Some((galley.text().to_owned(), pos.y))
-                    }
+                    egui::Shape::Text(text) => Some((text.galley.text().to_owned(), text.pos.y)),
                     _ => None,
                 })
                 .collect();
