@@ -90,6 +90,9 @@ const CARD_RADIUS: f32 = 9.0;
 const CARD_PAD: f32 = 8.0;
 const BLINK: Duration = Duration::from_millis(530);
 const IMAGE_FRAME_MS: u64 = 100;
+/// How long a candidate window title must hold steady before it reaches the
+/// window: fast-enough churn never touches SetWindowText at all.
+const TITLE_SETTLE: Duration = Duration::from_millis(400);
 
 fn next_image_frame(start: Instant, now: Instant) -> Instant {
     let phase = (now.duration_since(start).as_millis() % u128::from(IMAGE_FRAME_MS)) as u64;
@@ -2338,6 +2341,8 @@ struct State {
     prompt_queue: mtty_ui::agentloop::PromptQueue,
     prompt_input: String,
     last_title: Option<String>,
+    /// A candidate title and when it first differed from `last_title`.
+    title_settling: Option<(Option<String>, Instant)>,
     focused: bool,
     occluded: bool,
     redraw: redraw::Redraw,
@@ -4021,17 +4026,34 @@ impl State {
         self.ensure_details();
 
         // Sync the window title from the active tab, with the same state and
-        // group labels the tab strip shows.
+        // group labels the tab strip shows. A candidate title only reaches
+        // the window after it has held steady for a beat: a hosted agent
+        // animating a spinner through OSC 0 changes the title several times
+        // a second, and every SetWindowText re-layouts the Windows taskbar
+        // button, which made the whole taskbar visibly jump while the
+        // session worked. The final value always settles through.
         let title = self
             .tabs
             .get(self.active_tab)
             .map(|tab| self.chrome_title(tab, self.view_for(tab)))
             .filter(|s| !s.is_empty());
         if title != self.last_title {
-            if let Some(t) = &title {
-                self.window.set_title(t);
+            let settled = match self.title_settling.as_mut() {
+                Some((pending, since)) if *pending == title => since.elapsed() >= TITLE_SETTLE,
+                _ => {
+                    self.title_settling = Some((title.clone(), Instant::now()));
+                    false
+                }
+            };
+            if settled {
+                if let Some(t) = &title {
+                    self.window.set_title(t);
+                }
+                self.last_title = title;
+                self.title_settling = None;
             }
-            self.last_title = title;
+        } else {
+            self.title_settling = None;
         }
 
         // Build per-pane draw data (owning; releases the self.tabs borrow).
@@ -17120,6 +17142,7 @@ impl ApplicationHandler<HostEvent> for Host {
             prompt_queue: load_queue(),
             prompt_input: String::new(),
             last_title: None,
+            title_settling: None,
             focused: false,
             occluded: false,
             redraw: redraw::Redraw::default(),
