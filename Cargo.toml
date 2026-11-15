@@ -12,3 +12,9 @@ repository = "https://github.com/oxdingzg/miao-term"
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[patch.crates-io]
+# Vendored egui-winit 0.30.0: an image-only clipboard delivers an empty paste
+# to the application instead of nothing at all, so a terminal host can forward
+# it to the TUI (which then reads the clipboard image itself).
+egui-winit = { path = "vendor/egui-winit" }
