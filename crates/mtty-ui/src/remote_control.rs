@@ -2,6 +2,7 @@
 //! Call on a background job. Never put requests or replies in logs: invitations
 //! contain secrets and relay setup requests contain an account password.
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{Read, Write};
@@ -56,7 +57,14 @@ pub struct Policy {
     pub project_ids: Vec<String>,
     #[serde(rename = "sessionIDs")]
     pub session_ids: Vec<String>,
-    pub expires_at: u64,
+    pub expires_at: i64,
+    /// Owner opt-in: same-account devices are admitted without scanning.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_admit: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Serialize)]
@@ -239,13 +247,83 @@ pub fn owned_runtime_context(state: &Value) -> Option<(String, String)> {
     Some((runtime_id, storage))
 }
 
-/// The Remote Control summary the title bar shows; no secrets.
+/// The Remote Control summary the title bar and connection window use; no
+/// secrets. The host/runtime identity is what the private pipe already
+/// attested, and `session_ids` is the local publication gate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountStatus {
     pub enabled: bool,
     pub connected: bool,
+    pub host_id: Option<String>,
+    pub runtime_id: Option<String>,
+    pub host_public_key: Option<String>,
     pub hub_url: Option<String>,
     pub account_id: Option<String>,
+    pub session_ids: Vec<String>,
+}
+
+/// A short-lived pairing invitation. Its secret is delivered only in the URI
+/// fragment; this type deliberately does not implement `Debug`.
+#[derive(Clone)]
+pub struct Invitation {
+    pub pairing_id: String,
+    pub secret: String,
+    pub hub_url: String,
+    pub host_id: String,
+    pub runtime_id: String,
+    pub host_public_key: String,
+    pub expires_at: i64,
+}
+
+impl Invitation {
+    /// `miao://pair#<base64url JSON>`, the form the phone scanner and link
+    /// entry accept. The secret stays in the fragment.
+    pub fn uri(&self) -> String {
+        let value = serde_json::json!({
+            "version": 1,
+            "pairingID": self.pairing_id,
+            "secret": self.secret,
+            "hubURL": self.hub_url,
+            "hostID": self.host_id,
+            "runtimeID": self.runtime_id,
+            "hostPublicKey": self.host_public_key,
+            "expiresAt": self.expires_at,
+        });
+        format!(
+            "miao://pair#{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(serde_json::to_vec(&value).unwrap_or_default())
+        )
+    }
+}
+
+/// A device that claimed an invitation and waits for the owner's exact-key
+/// approval. The policy is what the grant will carry if approved.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Candidate {
+    pub pairing_id: String,
+    pub public_key: String,
+    pub label: String,
+    pub permissions: Vec<String>,
+    pub project_ids: Vec<String>,
+    pub session_ids: Vec<String>,
+    pub expires_at: i64,
+}
+
+/// An approved device grant. `version` is the observed version a revoke must
+/// name, so a stale window cannot revoke a newer grant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Grant {
+    pub id: String,
+    pub version: u64,
+    pub public_key: String,
+    pub label: String,
+    pub permissions: Vec<String>,
+    pub project_ids: Vec<String>,
+    pub session_ids: Vec<String>,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub revoked_at: Option<i64>,
 }
 
 /// Project a Remote Access status payload; absent fields stay absent rather
@@ -254,15 +332,96 @@ pub fn parse_status(data: &Value) -> Option<AccountStatus> {
     Some(AccountStatus {
         enabled: data.get("enabled")?.as_bool()?,
         connected: data.get("connected")?.as_bool()?,
-        hub_url: data
-            .get("hubURL")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        account_id: data
-            .get("accountID")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        host_id: text(data, "hostID"),
+        runtime_id: text(data, "runtimeID"),
+        host_public_key: text(data, "hostPublicKey"),
+        hub_url: text(data, "hubURL"),
+        account_id: text(data, "accountID"),
+        session_ids: strings(data.get("sessionIDs")),
     })
+}
+
+/// Parse the invitation `invite` returns. A malformed reply has no usable
+/// secret, so it is a whole-reply failure rather than a partial row.
+pub fn parse_invitation(data: &Value) -> Option<Invitation> {
+    if data.get("version")?.as_u64()? != 1 {
+        return None;
+    }
+    Some(Invitation {
+        pairing_id: data.get("pairingID")?.as_str()?.to_string(),
+        secret: data.get("secret")?.as_str()?.to_string(),
+        hub_url: data.get("hubURL")?.as_str()?.to_string(),
+        host_id: data.get("hostID")?.as_str()?.to_string(),
+        runtime_id: data.get("runtimeID")?.as_str()?.to_string(),
+        host_public_key: data.get("hostPublicKey")?.as_str()?.to_string(),
+        expires_at: data.get("expiresAt")?.as_i64()?,
+    })
+}
+
+/// Parse `pending`. A row missing its pairing identity or candidate key is
+/// skipped: one malformed entry must not hide the devices still waiting.
+pub fn parse_pending(data: &Value) -> Vec<Candidate> {
+    data.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            let candidate = row.get("candidate")?;
+            Some(Candidate {
+                pairing_id: row.get("pairingID")?.as_str()?.to_string(),
+                public_key: candidate.get("publicKey")?.as_str()?.to_string(),
+                label: candidate
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                permissions: strings(row.pointer("/policy/permissions")),
+                project_ids: strings(row.pointer("/policy/projectIDs")),
+                session_ids: strings(row.pointer("/policy/sessionIDs")),
+                expires_at: row.get("expiresAt")?.as_i64()?,
+            })
+        })
+        .collect()
+}
+
+/// Parse `devices`. Revoked grants stay in the reply, so callers can decide
+/// whether to show history; the connection window filters them out.
+pub fn parse_devices(data: &Value) -> Vec<Grant> {
+    data.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| {
+            Some(Grant {
+                id: row.get("id")?.as_str()?.to_string(),
+                version: row.get("version")?.as_u64()?,
+                public_key: row.get("publicKey")?.as_str()?.to_string(),
+                label: row
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                permissions: strings(row.get("permissions")),
+                project_ids: strings(row.get("projectIDs")),
+                session_ids: strings(row.get("sessionIDs")),
+                created_at: row.get("createdAt")?.as_i64()?,
+                expires_at: row.get("expiresAt")?.as_i64()?,
+                revoked_at: row.get("revokedAt").and_then(Value::as_i64),
+            })
+        })
+        .collect()
+}
+
+fn text(data: &Value, key: &str) -> Option<String> {
+    data.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn strings(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
 }
 
 #[cfg(test)]
@@ -365,6 +524,95 @@ mod tests {
         let malformed =
             serde_json::json!({ "runtime_context": { "kind": "owned", "runtimeID": "runtime-1" } });
         assert_eq!(owned_runtime_context(&malformed), None);
+    }
+
+    #[test]
+    fn an_invitation_round_trips_through_the_scan_uri() {
+        let invitation = parse_invitation(&serde_json::json!({
+            "version": 1,
+            "pairingID": "pair-one",
+            "secret": "a".repeat(64),
+            "hubURL": "https://hub.example.invalid",
+            "hostID": "host-one",
+            "runtimeID": "runtime-one",
+            "hostPublicKey": "k".repeat(87),
+            "expiresAt": 1_800_000_000_000_i64
+        }))
+        .expect("a complete invitation");
+        let uri = invitation.uri();
+        let encoded = uri
+            .strip_prefix("miao://pair#")
+            .expect("native pairing URI");
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded)
+            .expect("base64url payload");
+        let decoded: Value = serde_json::from_slice(&bytes).expect("JSON payload");
+        assert_eq!(decoded["version"], 1);
+        assert_eq!(decoded["pairingID"], "pair-one");
+        assert_eq!(decoded["hostID"], "host-one");
+        assert_eq!(decoded["runtimeID"], "runtime-one");
+        assert_eq!(decoded["expiresAt"], 1_800_000_000_000_i64);
+        assert_eq!(decoded["secret"].as_str().unwrap().len(), 64);
+    }
+
+    #[test]
+    fn pending_skips_rows_without_the_identity_or_candidate_key() {
+        let pending = parse_pending(&serde_json::json!([
+            {
+                "pairingID": "pair-one",
+                "candidate": { "publicKey": "key-one", "label": "iPhone", "clientChallenge": "c" },
+                "policy": {
+                    "permissions": ["read", "prompt"],
+                    "projectIDs": [],
+                    "sessionIDs": ["ses_1"],
+                    "expiresAt": 2_000_000_000_000_i64
+                },
+                "expiresAt": 1_800_000_000_000_i64
+            },
+            { "pairingID": "missing-candidate" },
+            { "candidate": { "publicKey": "key-two" }, "expiresAt": 1 }
+        ]));
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].pairing_id, "pair-one");
+        assert_eq!(pending[0].public_key, "key-one");
+        assert_eq!(pending[0].label, "iPhone");
+        assert_eq!(pending[0].permissions, ["read", "prompt"]);
+        assert_eq!(pending[0].session_ids, ["ses_1"]);
+    }
+
+    #[test]
+    fn devices_keep_the_observed_version_and_revocation_state() {
+        let devices = parse_devices(&serde_json::json!([
+            {
+                "id": "grant-one",
+                "version": 2,
+                "publicKey": "key-one",
+                "label": "iPhone",
+                "permissions": ["read"],
+                "projectIDs": ["prj_1"],
+                "sessionIDs": [],
+                "createdAt": 1,
+                "expiresAt": 2,
+                "revokedAt": null
+            },
+            {
+                "id": "grant-two",
+                "version": 3,
+                "publicKey": "key-two",
+                "label": "iPad",
+                "permissions": ["prompt"],
+                "projectIDs": [],
+                "sessionIDs": ["ses_1"],
+                "createdAt": 1,
+                "expiresAt": 2,
+                "revokedAt": 9
+            }
+        ]));
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].version, 2);
+        assert_eq!(devices[0].revoked_at, None);
+        assert_eq!(devices[1].revoked_at, Some(9));
+        assert_eq!(devices[1].session_ids, ["ses_1"]);
     }
 
     #[test]
