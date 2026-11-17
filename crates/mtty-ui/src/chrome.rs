@@ -978,6 +978,12 @@ pub trait Chrome {
     }
     /// The account chip was clicked.
     fn on_account_chip(&mut self) {}
+    /// Right-edge Remote Control chip text; `None` hides the chip.
+    fn remote_chip(&self) -> Option<String> {
+        None
+    }
+    /// The Remote Control chip was clicked.
+    fn on_remote_chip(&mut self) {}
     fn on_new_tab(&mut self) {}
     fn on_switch_tab(&mut self, i: usize) {}
     fn on_close_tab(&mut self, i: usize) {}
@@ -1155,6 +1161,7 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
     let mut font_delta = 0.0f32;
     let mut launch_miao = false;
     let mut account_chip = false;
+    let mut remote_chip = false;
     let mut toggle_sidebar = false;
     let mut toggle_details = false;
     let mut details_sel = None;
@@ -1342,6 +1349,12 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
                         .is_some_and(|label| ui.button(label).clicked())
                     {
                         account_chip = true;
+                    }
+                    if host
+                        .remote_chip()
+                        .is_some_and(|label| ui.button(label).clicked())
+                    {
+                        remote_chip = true;
                     }
                     if ui.button("A+").clicked() {
                         font_delta = 1.0;
@@ -1551,6 +1564,9 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
     }
     if account_chip {
         host.on_account_chip();
+    }
+    if remote_chip {
+        host.on_remote_chip();
     }
     // Per-pane close button, top-right of each pane. The host decides which
     // panes want one: every pane of a split tab, and a lone editor pane, whose

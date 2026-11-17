@@ -3090,6 +3090,7 @@ name = "mtty-ui"
 version = "0.3.4"
 dependencies = [
  "ashpd",
+ "base64",
  "egui",
  "global-hotkey",
  "minisign-verify",

@@ -27,7 +27,9 @@ Do not log, persist or debug-format them. The transport types deliberately do
 not implement `Debug` for secret-bearing values. Use fixed translated messages
 for the `Error` variants in the interface.
 
-The connection window, QR rendering, explicit pane Runtime/database reporting,
-owner confirmation of candidate keys/scopes and account setup forms are separate
-implementation work tracked in #74. The transport alone does not enable those
-user-facing flows.
+The title bar shows a **Remote** chip when the active pane reports an owned
+Runtime context. Its connection window reads the host status, issues a
+short-lived invitation as a `miao://pair#…` link, lists candidate device keys
+with their scopes for explicit approval or rejection, lists approved grants and
+revokes the exact observed version, and links to the existing Hub account
+window for relay setup. QR rendering remains separate work tracked in #74.
