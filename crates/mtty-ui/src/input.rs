@@ -236,6 +236,26 @@ pub fn encode_paste(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
+/// Bytes for a paste whose only payload is an image the host wrote to
+/// `MTTY_CLIPBOARD_FILE`. An empty bracketed paste is the signal an
+/// application already treats as "read the clipboard", but ConPTY drops that
+/// pair before the application sees it, so a Windows pane would receive no
+/// input at all and silently ignore the image. The legacy Ctrl+V byte survives
+/// ConPTY and asks the application to read the clipboard itself.
+pub fn encode_image_paste(bracketed: bool) -> Vec<u8> {
+    if !bracketed {
+        return Vec::new();
+    }
+    #[cfg(windows)]
+    {
+        vec![0x16]
+    }
+    #[cfg(not(windows))]
+    {
+        encode_paste("", true)
+    }
+}
+
 /// Encode a key press (special keys and modified keys; printable characters
 /// arrive through [`encode_text`]).
 pub fn encode_key(kind: KeyKind, mods: Modifiers, opts: EncodeOpts) -> Vec<u8> {
@@ -531,6 +551,15 @@ mod tests {
     fn paste_normalizes_newlines() {
         assert_eq!(encode_paste("a\nb", false), b"a\rb");
         assert_eq!(encode_paste("a", true), b"\x1b[200~a\x1b[201~");
+    }
+
+    #[test]
+    fn an_image_paste_reaches_a_windows_pane_as_ctrl_v() {
+        assert!(encode_image_paste(false).is_empty());
+        #[cfg(windows)]
+        assert_eq!(encode_image_paste(true), b"");
+        #[cfg(not(windows))]
+        assert_eq!(encode_image_paste(true), b"[200~[201~");
     }
 
     fn kitty(flags: u8) -> EncodeOpts {
