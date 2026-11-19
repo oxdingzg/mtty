@@ -1209,6 +1209,11 @@ struct Editor {
 enum JobDone {
     AccountSetup(Result<mtty_ui::remote_control::AccountStatus, mtty_ui::remote_control::Error>),
     AccountStatus(Option<mtty_ui::remote_control::AccountStatus>),
+    RemoteSnapshot(Result<RemoteSnapshot, mtty_ui::remote_control::Error>),
+    RemoteInvited(Result<mtty_ui::remote_control::Invitation, mtty_ui::remote_control::Error>),
+    RemoteApproved(Result<(), mtty_ui::remote_control::Error>),
+    RemoteRejected(Result<(), mtty_ui::remote_control::Error>),
+    RemoteRevoked(Result<(), mtty_ui::remote_control::Error>),
     BrowserContextLoaded {
         epoch: u64,
         run: bool,
@@ -1752,6 +1757,243 @@ struct AccountForm {
     password: String,
     name: String,
     error: Option<String>,
+}
+
+/// One page of the Remote Control window.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RemoteTab {
+    Invite,
+    Pending,
+    Devices,
+}
+
+/// The permissions an invitation can carry. The wire names are fixed by the
+/// grant schema; the labels are the owner-facing wording.
+const REMOTE_PERMISSIONS: [(&str, &str, &str); 10] = [
+    ("read", "Read sessions", "读取会话"),
+    ("prompt", "Send prompts", "发送消息"),
+    ("permission.reply", "Answer approvals", "处理授权请求"),
+    ("question.reply", "Answer questions", "回答问题"),
+    ("interrupt", "Stop a run", "停止运行"),
+    ("session.create", "Create sessions", "新建会话"),
+    ("session.rename", "Rename sessions", "重命名会话"),
+    ("session.selection", "Switch agent/model", "切换 Agent/模型"),
+    ("provider.configure", "Configure providers", "配置服务商"),
+    (
+        "session.delete",
+        "Delete sessions permanently",
+        "永久删除会话",
+    ),
+];
+
+/// Why an invitation cannot be issued yet.
+#[derive(Debug)]
+enum RemotePolicyError {
+    Permissions,
+    Scope,
+}
+
+/// Everything the host returned for the window in one background call.
+struct RemoteSnapshot {
+    status: mtty_ui::remote_control::AccountStatus,
+    pending: Vec<mtty_ui::remote_control::Candidate>,
+    devices: Vec<mtty_ui::remote_control::Grant>,
+}
+
+/// The Remote Control connection window. It only owns what the owner is
+/// editing; the host status and device lists are replaced wholesale by each
+/// snapshot so a stale window never shows a revoked grant as live.
+struct RemoteControlForm {
+    tab: RemoteTab,
+    permissions: Vec<String>,
+    session_ids: String,
+    project_ids: String,
+    expiry_days: u32,
+    invitation: Option<mtty_ui::remote_control::Invitation>,
+    invitation_uri: String,
+    pending: Vec<mtty_ui::remote_control::Candidate>,
+    devices: Vec<mtty_ui::remote_control::Grant>,
+    status: Option<mtty_ui::remote_control::AccountStatus>,
+    error: Option<String>,
+    loaded: bool,
+}
+
+impl RemoteControlForm {
+    fn new(session_id: Option<&str>) -> Self {
+        Self {
+            tab: RemoteTab::Invite,
+            permissions: ["read", "prompt", "permission.reply", "question.reply"]
+                .iter()
+                .map(|permission| (*permission).to_string())
+                .collect(),
+            session_ids: session_id.unwrap_or_default().to_string(),
+            project_ids: String::new(),
+            expiry_days: 30,
+            invitation: None,
+            invitation_uri: String::new(),
+            pending: Vec::new(),
+            devices: Vec::new(),
+            status: None,
+            error: None,
+            loaded: false,
+        }
+    }
+
+    fn policy(&self, now: i64) -> Result<mtty_ui::remote_control::Policy, RemotePolicyError> {
+        if self.permissions.is_empty() {
+            return Err(RemotePolicyError::Permissions);
+        }
+        let split = |value: &str| {
+            value
+                .split([',', ' ', '\n', '\t'])
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let project_ids = split(&self.project_ids);
+        let session_ids = split(&self.session_ids);
+        if project_ids.is_empty() && session_ids.is_empty() {
+            return Err(RemotePolicyError::Scope);
+        }
+        Ok(mtty_ui::remote_control::Policy {
+            permissions: self.permissions.clone(),
+            project_ids,
+            session_ids,
+            expires_at: now + i64::from(self.expiry_days.clamp(1, 365)) * 86_400_000,
+            auto_admit: false,
+        })
+    }
+}
+
+/// Milliseconds since the epoch, the unit the grant wire uses.
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+fn short_key(key: &str) -> String {
+    let mut short: String = key.chars().take(10).collect();
+    if key.chars().count() > 10 {
+        short.push('…');
+    }
+    short
+}
+
+/// A coarse validity label; the wire carries milliseconds and the window only
+/// needs to say whether a grant is live and roughly for how long.
+fn expiry_label(lang: mtty_ui::i18n::Lang, expires_at: i64, now: i64) -> String {
+    use mtty_ui::i18n::t;
+    let remaining = expires_at - now;
+    if remaining <= 0 {
+        return t(lang, "expired", "已过期").to_string();
+    }
+    let minutes = remaining / 60_000;
+    if minutes < 60 {
+        return format!(
+            "{} {minutes} {}",
+            t(lang, "expires in", "还有"),
+            t(lang, "min", "分钟")
+        );
+    }
+    let days = remaining / 86_400_000;
+    if days == 0 {
+        return format!(
+            "{} {} {}",
+            t(lang, "expires in", "还有"),
+            remaining / 3_600_000,
+            t(lang, "hours", "小时")
+        );
+    }
+    format!(
+        "{} {days} {}",
+        t(lang, "expires in", "还有"),
+        t(lang, "days", "天")
+    )
+}
+
+fn remote_call(
+    executable: &std::path::Path,
+    storage: &str,
+    runtime_id: &str,
+    operation: mtty_ui::remote_control::Operation,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<serde_json::Value, mtty_ui::remote_control::Error> {
+    let request = mtty_ui::remote_control::Request {
+        storage: Some(storage.to_string()),
+        runtime_id: Some(runtime_id.to_string()),
+        operation,
+    };
+    mtty_ui::remote_control::call(executable, &request, cancel).map(|reply| reply.data)
+}
+
+/// Read the three lists the window paints. Status failure is fatal for the
+/// snapshot; one malformed row in a list is dropped by the parsers instead.
+fn remote_snapshot(
+    executable: &std::path::Path,
+    storage: &str,
+    runtime_id: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<RemoteSnapshot, mtty_ui::remote_control::Error> {
+    use mtty_ui::remote_control::{parse_devices, parse_pending, parse_status, Error, Operation};
+    let status = remote_call(executable, storage, runtime_id, Operation::Status, cancel)
+        .ok()
+        .and_then(|data| parse_status(&data))
+        .ok_or(Error::Unavailable)?;
+    let pending = parse_pending(&remote_call(
+        executable,
+        storage,
+        runtime_id,
+        Operation::Pending,
+        cancel,
+    )?);
+    let devices = parse_devices(&remote_call(
+        executable,
+        storage,
+        runtime_id,
+        Operation::Devices,
+        cancel,
+    )?);
+    Ok(RemoteSnapshot {
+        status,
+        pending,
+        devices,
+    })
+}
+
+fn remote_error(lang: mtty_ui::i18n::Lang, error: mtty_ui::remote_control::Error) -> String {
+    use mtty_ui::i18n::t;
+    match error {
+        mtty_ui::remote_control::Error::InvalidRequest => {
+            t(lang, "The host refused the request.", "宿主拒绝了该请求。").to_string()
+        }
+        mtty_ui::remote_control::Error::NoRuntime => t(
+            lang,
+            "Run miao in this pane and enable Remote Control first.",
+            "请先在此窗格运行 miao 并启用远程控制。",
+        )
+        .to_string(),
+        mtty_ui::remote_control::Error::RuntimeChanged => t(
+            lang,
+            "This pane's Runtime changed; reopen the window.",
+            "此窗格的运行实例已变化；请重新打开窗口。",
+        )
+        .to_string(),
+        mtty_ui::remote_control::Error::Unavailable => t(
+            lang,
+            "The host is unreachable; check the window and refresh.",
+            "无法连接宿主；请检查窗口后刷新。",
+        )
+        .to_string(),
+        mtty_ui::remote_control::Error::Unconfirmed => t(
+            lang,
+            "The result is unconfirmed. Refresh and inspect before trying again.",
+            "结果未确认。请先刷新并核对，再决定是否重试。",
+        )
+        .to_string(),
+    }
 }
 
 impl SshForm {
@@ -2329,6 +2571,12 @@ struct State {
     /// Runtime whose status was already probed, so the chip starts honest
     /// after a restart without polling the bridge every frame.
     account_checked: Option<String>,
+    /// Remote Control connection window: open while Some.
+    rc_dialog: Option<RemoteControlForm>,
+    /// A private-pipe call is in flight; the window disables mutations.
+    rc_busy: bool,
+    /// Cancels the in-flight bridge call when the window closes.
+    rc_cancel: Arc<std::sync::atomic::AtomicBool>,
     details_tab: usize,
     details_cwd: Option<std::path::PathBuf>,
     details_data: Option<DetailsData>,
@@ -3690,6 +3938,32 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// A paste whose only payload is the image the host wrote for the pane.
+    /// Windows runs panes under ConPTY, which drops the empty bracketed-paste
+    /// pair; the legacy Ctrl+V byte is what actually reaches the application
+    /// and tells it to read the clipboard.
+    fn paste_image(&mut self) {
+        if self.read_only {
+            return;
+        }
+        // An image has no text to insert into an editor, and the terminal pane
+        // underneath is not the focused surface.
+        if self.active_editor_mut().is_some() {
+            return;
+        }
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            if tab.attention == Some(Attention::Done) {
+                tab.attention = None;
+            }
+            if let Some(pane) = tab.panes.iter_mut().find(|p| p.id == tab.active) {
+                let bytes = input::encode_image_paste(pane.term.screen().bracketed_paste());
+                pane.term.write(&bytes);
+                pane.scroll = 0;
+            }
+        }
+        self.window.request_redraw();
+    }
+
     /// Menu-bar Copy/Paste/Select All arrive as commands, not key events: the
     /// macOS menu claims ⌘C/⌘V/⌘A before the view sees them. When a text field
     /// (editor, Composer, dialogs) has focus, hand the edit to egui instead of
@@ -3729,7 +4003,7 @@ impl State {
         let image = mtty_platform::clipboard_image();
         if let Some(image) = image {
             if std::fs::write(&path, image).is_ok() {
-                self.paste("");
+                self.paste_image();
                 return;
             }
         }
@@ -4674,8 +4948,12 @@ impl State {
                         mtty_ui::remote_control::AccountStatus {
                             enabled: true,
                             connected: false,
+                            host_id: None,
+                            runtime_id: None,
+                            host_public_key: None,
                             hub_url: None,
                             account_id: None,
+                            session_ids: Vec::new(),
                         },
                     )
                 });
@@ -4759,6 +5037,579 @@ impl State {
             self.account_cancel
                 .store(true, std::sync::atomic::Ordering::Relaxed);
             self.account_dialog = None;
+        }
+        self.window.request_redraw();
+    }
+
+    fn active_session_id(&self) -> Option<String> {
+        let pane = self.active_pane_id()?;
+        self.mtp
+            .agent_for(&pane)?
+            .get("session_id")?
+            .as_str()
+            .map(str::to_string)
+    }
+
+    fn set_remote_error(&mut self, message: String) {
+        if let Some(form) = self.rc_dialog.as_mut() {
+            form.error = Some(message);
+        }
+    }
+
+    /// Open the connection window for the active pane's owned Runtime. The
+    /// window never guesses a Runtime or falls back to the default one.
+    fn open_remote_control(&mut self) {
+        if self.rc_dialog.is_some() {
+            return;
+        }
+        let session = self.active_session_id();
+        self.rc_dialog = Some(RemoteControlForm::new(session.as_deref()));
+        self.rc_busy = false;
+        self.rc_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        self.refresh_remote_control();
+        self.window.request_redraw();
+    }
+
+    fn refresh_remote_control(&mut self) {
+        use mtty_ui::i18n::t;
+        if self.rc_busy {
+            return;
+        }
+        let lang = self.lang;
+        let Some((runtime_id, storage)) = self.account_runtime() else {
+            self.set_remote_error(
+                t(
+                    lang,
+                    "Run miao in this pane and enable Remote Control first.",
+                    "请先在此窗格运行 miao 并启用远程控制。",
+                )
+                .to_string(),
+            );
+            return;
+        };
+        let Some(executable) = mtty_ui::integration::executable("miao") else {
+            self.set_remote_error(
+                t(
+                    lang,
+                    "The miao CLI is not installed.",
+                    "尚未安装 miao 命令行。",
+                )
+                .to_string(),
+            );
+            return;
+        };
+        self.rc_busy = true;
+        self.rc_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = Arc::clone(&self.rc_cancel);
+        self.spawn_job(move || {
+            JobDone::RemoteSnapshot(remote_snapshot(&executable, &storage, &runtime_id, &cancel))
+        });
+    }
+
+    fn submit_remote_invite(&mut self) {
+        use mtty_ui::i18n::t;
+        if self.rc_busy {
+            return;
+        }
+        let lang = self.lang;
+        let Some(form) = self.rc_dialog.as_ref() else {
+            return;
+        };
+        let policy = match form.policy(now_millis()) {
+            Ok(policy) => policy,
+            Err(RemotePolicyError::Permissions) => {
+                self.set_remote_error(
+                    t(
+                        lang,
+                        "Choose at least one permission.",
+                        "请至少选择一项权限。",
+                    )
+                    .to_string(),
+                );
+                return;
+            }
+            Err(RemotePolicyError::Scope) => {
+                self.set_remote_error(
+                    t(
+                        lang,
+                        "Name at least one Session or project this device may reach.",
+                        "请至少填写一个允许访问的会话或项目。",
+                    )
+                    .to_string(),
+                );
+                return;
+            }
+        };
+        let Some((runtime_id, storage)) = self.account_runtime() else {
+            self.set_remote_error(
+                t(
+                    lang,
+                    "Run miao in this pane and enable Remote Control first.",
+                    "请先在此窗格运行 miao 并启用远程控制。",
+                )
+                .to_string(),
+            );
+            return;
+        };
+        let Some(executable) = mtty_ui::integration::executable("miao") else {
+            self.set_remote_error(
+                t(
+                    lang,
+                    "The miao CLI is not installed.",
+                    "尚未安装 miao 命令行。",
+                )
+                .to_string(),
+            );
+            return;
+        };
+        self.rc_busy = true;
+        self.rc_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = Arc::clone(&self.rc_cancel);
+        self.spawn_job(move || {
+            let result = remote_call(
+                &executable,
+                &storage,
+                &runtime_id,
+                mtty_ui::remote_control::Operation::Invite { policy },
+                &cancel,
+            )
+            .and_then(|data| {
+                mtty_ui::remote_control::parse_invitation(&data)
+                    .ok_or(mtty_ui::remote_control::Error::Unavailable)
+            });
+            JobDone::RemoteInvited(result)
+        });
+    }
+
+    /// One mutation, one child process. The caller never retries an uncertain
+    /// result; `finish_job` asks for a fresh snapshot instead.
+    fn submit_remote_mutation(
+        &mut self,
+        operation: mtty_ui::remote_control::Operation,
+        done: fn(Result<(), mtty_ui::remote_control::Error>) -> JobDone,
+    ) {
+        if self.rc_busy {
+            return;
+        }
+        let lang = self.lang;
+        let Some((runtime_id, storage)) = self.account_runtime() else {
+            self.set_remote_error(
+                mtty_ui::i18n::t(
+                    lang,
+                    "Run miao in this pane and enable Remote Control first.",
+                    "请先在此窗格运行 miao 并启用远程控制。",
+                )
+                .to_string(),
+            );
+            return;
+        };
+        let Some(executable) = mtty_ui::integration::executable("miao") else {
+            self.set_remote_error(
+                mtty_ui::i18n::t(
+                    lang,
+                    "The miao CLI is not installed.",
+                    "尚未安装 miao 命令行。",
+                )
+                .to_string(),
+            );
+            return;
+        };
+        self.rc_busy = true;
+        self.rc_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = Arc::clone(&self.rc_cancel);
+        self.spawn_job(move || {
+            done(remote_call(&executable, &storage, &runtime_id, operation, &cancel).map(|_| ()))
+        });
+    }
+
+    fn remote_window(&mut self, ctx: &egui::Context) {
+        use mtty_ui::i18n::t;
+        let lang = self.lang;
+        let busy = self.rc_busy;
+        let negative = chrome_rgb(self.theme.chrome().negative);
+        let now = now_millis();
+        let mut open = true;
+        let mut close = false;
+        let mut refresh = false;
+        let mut generate = false;
+        let mut open_account = false;
+        let mut approve: Option<(String, String)> = None;
+        let mut reject: Option<String> = None;
+        let mut revoke: Option<(String, u64)> = None;
+        {
+            let Some(form) = self.rc_dialog.as_mut() else {
+                return;
+            };
+            egui::Window::new(t(lang, "Remote Control", "远程控制"))
+                .id(egui::Id::new("remote_control"))
+                .open(&mut open)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .collapsible(false)
+                .resizable(true)
+                .default_width(470.0)
+                .show(ctx, |ui| {
+                    ui.add_space(4.0);
+                    match &form.status {
+                        Some(status) => {
+                            ui.horizontal(|ui| {
+                                ui.label(t(lang, "Runtime", "运行实例"));
+                                ui.label(
+                                    egui::RichText::new(
+                                        status
+                                            .runtime_id
+                                            .as_deref()
+                                            .map(short_key)
+                                            .unwrap_or_else(|| "-".to_string()),
+                                    )
+                                    .monospace(),
+                                );
+                                ui.separator();
+                                ui.label(if status.connected {
+                                    t(lang, "connected", "已连接")
+                                } else {
+                                    t(lang, "offline", "离线")
+                                });
+                                ui.separator();
+                                ui.label(format!(
+                                    "{} {}",
+                                    t(lang, "published Sessions:", "已发布会话："),
+                                    status.session_ids.len()
+                                ));
+                            });
+                        }
+                        None => {
+                            ui.label(if form.loaded {
+                                t(lang, "The host returned no status.", "宿主没有返回状态。")
+                            } else {
+                                t(lang, "Checking the host…", "正在检查宿主…")
+                            });
+                        }
+                    }
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(
+                            &mut form.tab,
+                            RemoteTab::Invite,
+                            t(lang, "Invite", "邀请"),
+                        );
+                        ui.selectable_value(
+                            &mut form.tab,
+                            RemoteTab::Pending,
+                            format!(
+                                "{} ({})",
+                                t(lang, "Pending", "待批准"),
+                                form.pending.len()
+                            ),
+                        );
+                        ui.selectable_value(
+                            &mut form.tab,
+                            RemoteTab::Devices,
+                            format!(
+                                "{} ({})",
+                                t(lang, "Devices", "设备"),
+                                form.devices
+                                    .iter()
+                                    .filter(|grant| grant.revoked_at.is_none()
+                                        && grant.expires_at > now)
+                                    .count()
+                            ),
+                        );
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui
+                                    .add_enabled(
+                                        !busy,
+                                        egui::Button::new(t(lang, "Refresh", "刷新")),
+                                    )
+                                    .clicked()
+                                {
+                                    refresh = true;
+                                }
+                                if busy {
+                                    ui.spinner();
+                                }
+                            },
+                        );
+                    });
+                    if let Some(error) = &form.error {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(error).color(negative));
+                    }
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(420.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| match form.tab {
+                            RemoteTab::Invite => {
+                                ui.label(t(
+                                    lang,
+                                    "The invitation lets one device ask for the listed access. It expires in three minutes; approval stays a separate owner step.",
+                                    "邀请只允许一台设备申请下列权限，三分钟内有效；设备出现后仍需你单独批准。",
+                                ));
+                                ui.add_space(6.0);
+                                for (id, english, chinese) in REMOTE_PERMISSIONS {
+                                    let mut checked =
+                                        form.permissions.iter().any(|value| value == id);
+                                    if ui.checkbox(&mut checked, t(lang, english, chinese)).changed()
+                                    {
+                                        if checked {
+                                            form.permissions.push(id.to_string());
+                                        } else {
+                                            form.permissions.retain(|value| value != id);
+                                        }
+                                    }
+                                }
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(t(lang, "Sessions", "会话"));
+                                    ui.add_enabled(
+                                        !busy,
+                                        egui::TextEdit::singleline(&mut form.session_ids)
+                                            .hint_text(t(lang, "ses_…", "ses_…"))
+                                            .desired_width(300.0),
+                                    );
+                                });
+                                if let Some(status) = &form.status {
+                                    if !status.session_ids.is_empty() {
+                                        ui.horizontal_wrapped(|ui| {
+                                            ui.label(t(lang, "Published:", "已发布："));
+                                            for session in &status.session_ids {
+                                                if ui
+                                                    .add_enabled(
+                                                        !busy,
+                                                        egui::Button::new(
+                                                            egui::RichText::new(session)
+                                                                .monospace(),
+                                                        ),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    form.session_ids = session.clone();
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.label(t(lang, "Projects", "项目"));
+                                    ui.add_enabled(
+                                        !busy,
+                                        egui::TextEdit::singleline(&mut form.project_ids)
+                                            .hint_text(t(lang, "optional", "可选"))
+                                            .desired_width(300.0),
+                                    );
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label(t(lang, "Grant lasts", "授权有效期"));
+                                    ui.add_enabled(
+                                        !busy,
+                                        egui::DragValue::new(&mut form.expiry_days)
+                                            .range(1..=365),
+                                    );
+                                    ui.label(t(lang, "days", "天"));
+                                });
+                                ui.add_space(6.0);
+                                button_row(ui, |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            !busy,
+                                            egui::Button::new(t(
+                                                lang,
+                                                "Create invitation",
+                                                "生成邀请",
+                                            )),
+                                        )
+                                        .clicked()
+                                    {
+                                        generate = true;
+                                    }
+                                    if ui
+                                        .button(t(lang, "Hub account…", "Hub 账号…"))
+                                        .clicked()
+                                    {
+                                        open_account = true;
+                                    }
+                                });
+                                if let Some(invitation) = &form.invitation {
+                                    ui.add_space(8.0);
+                                    ui.label(format!(
+                                        "{} · {}",
+                                        t(lang, "Invitation expires", "邀请有效期"),
+                                        expiry_label(lang, invitation.expires_at, now)
+                                    ));
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .button(t(lang, "Copy link", "复制链接"))
+                                            .clicked()
+                                        {
+                                            ui.ctx().copy_text(form.invitation_uri.clone());
+                                        }
+                                    });
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&form.invitation_uri).monospace(),
+                                        )
+                                        .wrap(),
+                                    );
+                                    ui.label(t(
+                                        lang,
+                                        "Scan or paste this link on the phone; nothing is granted until you approve the device key below.",
+                                        "在手机上扫描或粘贴此链接；设备密钥出现在“待批准”后仍需你确认。",
+                                    ));
+                                }
+                            }
+                            RemoteTab::Pending => {
+                                if form.pending.is_empty() {
+                                    ui.label(t(
+                                        lang,
+                                        "No device is waiting for approval.",
+                                        "没有等待批准的设备。",
+                                    ));
+                                }
+                                for candidate in &form.pending {
+                                    ui.group(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new(&candidate.label).strong());
+                                            ui.label(
+                                                egui::RichText::new(short_key(&candidate.public_key))
+                                                    .monospace(),
+                                            );
+                                        });
+                                        ui.label(format!(
+                                            "{}: {}",
+                                            t(lang, "Permissions", "权限"),
+                                            candidate.permissions.join(", ")
+                                        ));
+                                        ui.label(format!(
+                                            "{}: {} · {}",
+                                            t(lang, "Sessions", "会话"),
+                                            candidate.session_ids.len(),
+                                            expiry_label(lang, candidate.expires_at, now)
+                                        ));
+                                        ui.horizontal(|ui| {
+                                            if ui
+                                                .add_enabled(
+                                                    !busy,
+                                                    egui::Button::new(t(lang, "Approve", "批准")),
+                                                )
+                                                .clicked()
+                                            {
+                                                approve = Some((
+                                                    candidate.pairing_id.clone(),
+                                                    candidate.public_key.clone(),
+                                                ));
+                                            }
+                                            if ui
+                                                .add_enabled(
+                                                    !busy,
+                                                    egui::Button::new(t(lang, "Reject", "拒绝")),
+                                                )
+                                                .clicked()
+                                            {
+                                                reject = Some(candidate.pairing_id.clone());
+                                            }
+                                        });
+                                    });
+                                }
+                            }
+                            RemoteTab::Devices => {
+                                let mut any = false;
+                                for grant in form.devices.iter().filter(|grant| {
+                                    grant.revoked_at.is_none() && grant.expires_at > now
+                                }) {
+                                    any = true;
+                                    ui.group(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(egui::RichText::new(&grant.label).strong());
+                                            ui.label(
+                                                egui::RichText::new(short_key(&grant.public_key))
+                                                    .monospace(),
+                                            );
+                                            ui.label(format!("v{}", grant.version));
+                                        });
+                                        ui.label(format!(
+                                            "{}: {}",
+                                            t(lang, "Permissions", "权限"),
+                                            grant.permissions.join(", ")
+                                        ));
+                                        ui.label(format!(
+                                            "{}: {} · {}",
+                                            t(lang, "Sessions", "会话"),
+                                            grant.session_ids.len(),
+                                            expiry_label(lang, grant.expires_at, now)
+                                        ));
+                                        if ui
+                                            .add_enabled(
+                                                !busy,
+                                                egui::Button::new(t(
+                                                    lang,
+                                                    "Revoke",
+                                                    "撤销",
+                                                )),
+                                            )
+                                            .clicked()
+                                        {
+                                            revoke = Some((grant.id.clone(), grant.version));
+                                        }
+                                    });
+                                }
+                                if !any {
+                                    ui.label(t(
+                                        lang,
+                                        "No approved device can reach this Runtime.",
+                                        "当前没有可访问此运行实例的已批准设备。",
+                                    ));
+                                }
+                            }
+                        });
+                    ui.add_space(6.0);
+                    button_row(ui, |ui| {
+                        if ui.button(t(lang, "Close", "关闭")).clicked() {
+                            close = true;
+                        }
+                    });
+                    ui.add_space(4.0);
+                });
+        }
+        if !open || close || ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            self.rc_cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.rc_dialog = None;
+        } else {
+            if open_account {
+                self.open_account_dialog();
+            }
+            if refresh {
+                self.refresh_remote_control();
+            }
+            if generate {
+                self.submit_remote_invite();
+            }
+            if let Some((pairing_id, public_key)) = approve {
+                self.submit_remote_mutation(
+                    mtty_ui::remote_control::Operation::Approve {
+                        pairing_id,
+                        public_key,
+                    },
+                    JobDone::RemoteApproved,
+                );
+            }
+            if let Some(pairing_id) = reject {
+                self.submit_remote_mutation(
+                    mtty_ui::remote_control::Operation::Reject { pairing_id },
+                    JobDone::RemoteRejected,
+                );
+            }
+            if let Some((grant_id, grant_version)) = revoke {
+                self.submit_remote_mutation(
+                    mtty_ui::remote_control::Operation::Revoke {
+                        grant_id,
+                        grant_version,
+                    },
+                    JobDone::RemoteRevoked,
+                );
+            }
         }
         self.window.request_redraw();
     }
@@ -4916,6 +5767,9 @@ impl State {
         }
         if self.account_dialog.is_some() {
             self.account_window(ctx);
+        }
+        if self.rc_dialog.is_some() {
+            self.remote_window(ctx);
         }
         // Hyperlink hover cue: hand cursor + underline while Cmd/Ctrl is held.
         let link = if self.mods.super_key() || self.mods.control_key() {
@@ -6058,6 +6912,17 @@ enum Cmd {
 }
 
 impl State {
+    /// Whether the active session can administer a miao Remote Control host:
+    /// the CLI is on PATH and its detection is fresh enough to trust.
+    fn miao_installed(&self) -> bool {
+        mtty_ui::integration::AGENTS
+            .iter()
+            .position(|agent| agent.name == "miao")
+            .and_then(|index| self.agents_detected.as_ref()?.1.get(index))
+            .copied()
+            .unwrap_or(false)
+    }
+
     fn handles(&self) -> Vec<mtty_ui::layout::Handle> {
         self.tabs
             .get(self.active_tab)
@@ -15455,6 +16320,63 @@ impl State {
                     self.account_status = status;
                 }
             }
+            JobDone::RemoteSnapshot(result) => {
+                self.rc_busy = false;
+                let lang = self.lang;
+                let active = self.active_session_id();
+                if let Some(form) = self.rc_dialog.as_mut() {
+                    form.loaded = true;
+                    match result {
+                        Ok(snapshot) => {
+                            // An empty scope would make the invitation fail at
+                            // the host. Prefer the Session this pane is showing
+                            // when it is published; otherwise use the only
+                            // published Session, and leave multiple choices to
+                            // the owner instead of guessing.
+                            if form.session_ids.trim().is_empty() {
+                                let published = &snapshot.status.session_ids;
+                                if let Some(active) = active.filter(|id| published.contains(id)) {
+                                    form.session_ids = active;
+                                } else if published.len() == 1 {
+                                    form.session_ids = published[0].clone();
+                                }
+                            }
+                            form.status = Some(snapshot.status);
+                            form.pending = snapshot.pending;
+                            form.devices = snapshot.devices;
+                            form.error = None;
+                        }
+                        Err(error) => form.error = Some(remote_error(lang, error)),
+                    }
+                }
+            }
+            JobDone::RemoteInvited(result) => {
+                self.rc_busy = false;
+                let lang = self.lang;
+                if let Some(form) = self.rc_dialog.as_mut() {
+                    match result {
+                        Ok(invitation) => {
+                            form.invitation_uri = invitation.uri();
+                            form.invitation = Some(invitation);
+                            form.error = None;
+                        }
+                        Err(error) => form.error = Some(remote_error(lang, error)),
+                    }
+                }
+            }
+            JobDone::RemoteApproved(result)
+            | JobDone::RemoteRejected(result)
+            | JobDone::RemoteRevoked(result) => {
+                self.rc_busy = false;
+                let lang = self.lang;
+                match result {
+                    // Success invalidates the lists the owner was reading, so
+                    // read them again. An uncertain result is never retried;
+                    // the message asks the owner to inspect first.
+                    Ok(()) => self.refresh_remote_control(),
+                    Err(error) => self.set_remote_error(remote_error(lang, error)),
+                }
+            }
             JobDone::DataPreviewLoaded { epoch, result } => {
                 if let Some(view) = self
                     .data_preview
@@ -17110,6 +18032,9 @@ impl ApplicationHandler<HostEvent> for Host {
             account_busy: false,
             account_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             account_checked: None,
+            rc_dialog: None,
+            rc_busy: false,
+            rc_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             details_tab: mtty_config::env("DETAILS_TAB")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(window_state.details_tab),
@@ -19951,22 +20876,24 @@ impl chrome::Chrome for State {
         self.window.request_redraw();
     }
     fn account_chip(&self) -> Option<String> {
-        if self.read_only {
-            return None;
-        }
-        let installed = mtty_ui::integration::AGENTS
-            .iter()
-            .position(|agent| agent.name == "miao")
-            .and_then(|index| self.agents_detected.as_ref()?.1.get(index))
-            .copied()
-            .unwrap_or(false);
-        if !installed {
+        if self.read_only || !self.miao_installed() {
             return None;
         }
         Some(account_chip_label(self.lang, self.account_status.as_ref()).to_string())
     }
     fn on_account_chip(&mut self) {
         self.open_account_dialog();
+    }
+    /// The Remote Control chip only appears when the active pane reports an
+    /// owned Runtime, so it can never offer to administer a guessed host.
+    fn remote_chip(&self) -> Option<String> {
+        if self.read_only || !self.miao_installed() || self.account_runtime().is_none() {
+            return None;
+        }
+        Some(mtty_ui::i18n::t(self.lang, "Remote", "远控").to_string())
+    }
+    fn on_remote_chip(&mut self) {
+        self.open_remote_control();
     }
     fn status_right(&self) -> String {
         if let Some(ed) = self.active_editor() {
@@ -21619,6 +22546,26 @@ mod tests {
     }
 
     #[test]
+    fn remote_policy_requires_permissions_and_a_scope() {
+        let mut form = RemoteControlForm::new(Some("ses_1"));
+        let policy = form.policy(1_000).expect("defaults form a valid policy");
+        assert_eq!(policy.session_ids, ["ses_1"]);
+        assert_eq!(
+            policy.permissions,
+            ["read", "prompt", "permission.reply", "question.reply"]
+        );
+        assert!(policy.expires_at > 1_000);
+        form.permissions.clear();
+        assert!(matches!(
+            form.policy(0),
+            Err(RemotePolicyError::Permissions)
+        ));
+        form.permissions.push("read".into());
+        form.session_ids.clear();
+        assert!(matches!(form.policy(0), Err(RemotePolicyError::Scope)));
+    }
+
+    #[test]
     fn account_chip_wording_follows_the_account_state() {
         use mtty_ui::i18n::Lang;
         use mtty_ui::remote_control::AccountStatus;
@@ -21627,15 +22574,23 @@ mod tests {
         let detached = AccountStatus {
             enabled: true,
             connected: false,
+            host_id: None,
+            runtime_id: None,
+            host_public_key: None,
             hub_url: Some("https://hub.example.invalid".into()),
             account_id: None,
+            session_ids: Vec::new(),
         };
         assert_eq!(account_chip_label(Lang::En, Some(&detached)), "Sign In");
         let attached = AccountStatus {
             enabled: true,
             connected: true,
+            host_id: Some("host-1".into()),
+            runtime_id: Some("runtime-1".into()),
+            host_public_key: None,
             hub_url: Some("https://hub.example.invalid".into()),
             account_id: Some("acct-1".into()),
+            session_ids: vec!["ses_1".into()],
         };
         assert_eq!(account_chip_label(Lang::En, Some(&attached)), "Account");
         assert_eq!(account_chip_label(Lang::Zh, Some(&attached)), "账号");
