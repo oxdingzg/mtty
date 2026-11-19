@@ -11408,29 +11408,42 @@ impl State {
         let (tx, rx) = std::sync::mpsc::channel();
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
-            let out = mtty_platform::background_command("curl")
-                .args(["-fsSL", "--max-time", "8", &url])
-                .output();
-            let result = match out {
-                Ok(o) if o.status.success() => {
-                    match mtty_ui::update::parse_checked(&String::from_utf8_lossy(&o.stdout)) {
-                        Ok(m) => {
-                            if mtty_ui::update::is_newer(&m.version, env!("CARGO_PKG_VERSION")) {
-                                let artifact = m.for_platform().cloned();
-                                UpdateResult::Available {
-                                    version: m.version,
-                                    artifact,
+            // The dl.mtty.dev mirror answers first for networks that cannot
+            // reach github.com; every failure falls through to the next
+            // candidate and the last result wins.
+            let mut result =
+                UpdateResult::Failed("Could not fetch the update manifest.".to_string());
+            for candidate in mtty_ui::update::mirror_candidates(&url) {
+                let out = mtty_platform::background_command("curl")
+                    .args(["-fsSL", "--max-time", "8", &candidate])
+                    .output();
+                result = match out {
+                    Ok(o) if o.status.success() => {
+                        match mtty_ui::update::parse_checked(&String::from_utf8_lossy(&o.stdout)) {
+                            Ok(m) => {
+                                if mtty_ui::update::is_newer(&m.version, env!("CARGO_PKG_VERSION"))
+                                {
+                                    let artifact = m.for_platform().cloned();
+                                    UpdateResult::Available {
+                                        version: m.version,
+                                        artifact,
+                                    }
+                                } else {
+                                    UpdateResult::Current
                                 }
-                            } else {
-                                UpdateResult::Current
                             }
+                            Err(error) => UpdateResult::Failed(error.to_string()),
                         }
-                        Err(error) => UpdateResult::Failed(error.to_string()),
                     }
+                    Ok(_) => {
+                        UpdateResult::Failed("Could not fetch the update manifest.".to_string())
+                    }
+                    Err(error) => UpdateResult::Failed(error.to_string()),
+                };
+                if !matches!(result, UpdateResult::Failed(_)) {
+                    break;
                 }
-                Ok(_) => UpdateResult::Failed("Could not fetch the update manifest.".to_string()),
-                Err(error) => UpdateResult::Failed(error.to_string()),
-            };
+            }
             let _ = tx.send(result);
             // An unfocused window can be waiting without redraws or PTY
             // output. Deliver the result even while its shell is idle.

@@ -352,6 +352,19 @@ pub fn url_file_name(url: &str) -> Option<String> {
     ok.then(|| name.to_string())
 }
 
+/// dl.mtty.dev serves the same release paths as github.com/mttydev/mtty for
+/// networks that cannot reach GitHub, so the mirror is tried first and GitHub
+/// is the fallback. A URL outside that pair — an operator-pinned feed, a
+/// host we do not mirror — is honored alone, never routed through a stranger.
+pub fn mirror_candidates(url: &str) -> Vec<String> {
+    const GITHUB: &str = "https://github.com/mttydev/mtty/";
+    const MIRROR: &str = "https://dl.mtty.dev/mtty/";
+    match url.strip_prefix(GITHUB) {
+        Some(rest) => vec![format!("{MIRROR}{rest}"), url.to_string()],
+        None => vec![url.to_string()],
+    }
+}
+
 /// Download an artifact into `dir` and check it before anything uses it: the
 /// manifest's SHA-256 and a minisign signature, which is required. A file that
 /// fails either check is deleted. Blocks: run it off the UI thread.
@@ -374,39 +387,49 @@ pub fn download_verified(
             .output()
             .map_err(|e| format!("curl: {e}"))
     };
-    let out = curl(&[
-        "--max-time",
-        "900",
-        "-o",
-        &path.to_string_lossy(),
-        &artifact.url,
-    ])?;
-    if !out.status.success() {
-        let _ = std::fs::remove_file(&path);
-        return Err(format!(
-            "download failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    let checked = (|| {
-        if !artifact.sha256.trim().is_empty()
-            && !verify_file(&path, &artifact.sha256).map_err(|e| e.to_string())?
-        {
-            return Err("the checksum does not match".to_string());
-        }
-        let sig = curl(&["--max-time", "60", sig_url])?;
-        if !sig.status.success() {
-            return Err("could not fetch the signature".to_string());
-        }
-        verify_signature(&path, &String::from_utf8_lossy(&sig.stdout), pubkey, &name)
-    })();
-    match checked {
-        Ok(()) => Ok(path),
-        Err(e) => {
+    // The artifact and its signature live under the same release path, so a
+    // mirror rewrite pairs them position for position.
+    let artifact_urls = mirror_candidates(&artifact.url);
+    let sig_urls = mirror_candidates(sig_url);
+    let mut last_error = "the update URL has no mirror candidates".to_string();
+    for (url, sig_url) in artifact_urls.iter().zip(sig_urls.iter()) {
+        let out = curl(&["--max-time", "900", "-o", &path.to_string_lossy(), url]);
+        let out = match out {
+            Ok(out) => out,
+            Err(error) => {
+                last_error = error;
+                continue;
+            }
+        };
+        if !out.status.success() {
             let _ = std::fs::remove_file(&path);
-            Err(e)
+            last_error = format!(
+                "download failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            continue;
+        }
+        let checked = (|| {
+            if !artifact.sha256.trim().is_empty()
+                && !verify_file(&path, &artifact.sha256).map_err(|e| e.to_string())?
+            {
+                return Err("the checksum does not match".to_string());
+            }
+            let sig = curl(&["--max-time", "60", sig_url])?;
+            if !sig.status.success() {
+                return Err("could not fetch the signature".to_string());
+            }
+            verify_signature(&path, &String::from_utf8_lossy(&sig.stdout), pubkey, &name)
+        })();
+        match checked {
+            Ok(()) => return Ok(path),
+            Err(e) => {
+                let _ = std::fs::remove_file(&path);
+                last_error = e;
+            }
         }
     }
+    Err(last_error)
 }
 
 #[cfg(test)]
@@ -565,6 +588,30 @@ t+gWHfmlkGM5SoMqXUkBvKwxms2sV0uR79Q4Xsnk42jdyFJ1AS1RuLQKXe0dIrQgW0flxW8/q6jndgI3
         assert_eq!(artifact.url, "https://x/a.dmg");
         assert_eq!(artifact.sha256, "ab");
         assert_eq!(artifact.signature.as_deref(), Some("https://x/a.dmg.sig"));
+    }
+
+    #[test]
+    fn mirror_candidates_put_the_mirror_first_for_release_urls() {
+        let candidates = mirror_candidates(
+            "https://github.com/mttydev/mtty/releases/download/v0.3.5/mtty-macos-arm64.zip",
+        );
+        assert_eq!(
+            candidates,
+            vec![
+                "https://dl.mtty.dev/mtty/releases/download/v0.3.5/mtty-macos-arm64.zip"
+                    .to_string(),
+                "https://github.com/mttydev/mtty/releases/download/v0.3.5/mtty-macos-arm64.zip"
+                    .to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn mirror_candidates_honor_a_pinned_feed_alone() {
+        assert_eq!(
+            mirror_candidates("https://example.com/feeds/latest.json"),
+            vec!["https://example.com/feeds/latest.json".to_string()]
+        );
     }
 
     #[test]
