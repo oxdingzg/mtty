@@ -2,12 +2,12 @@
 
 **mtty —— 用 Rust 编写的 AI 原生终端与编辑器,本地与远程同样顺手。**
 
-[![CI](https://github.com/oxdingzg/mtty/actions/workflows/ci.yml/badge.svg)](https://github.com/oxdingzg/mtty/actions/workflows/ci.yml)
+[![CI](https://github.com/mttydev/mtty/actions/workflows/ci.yml/badge.svg)](https://github.com/mttydev/mtty/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](Cargo.toml)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#环境要求)
 
-**官网:** [mtty.dev/mtty](https://mtty.dev/zh/mtty) · **文档:** [mtty.dev/docs/mtty](https://mtty.dev/zh/docs/mtty) · [版本发布](https://github.com/oxdingzg/mtty/releases) · [相关项目](#相关项目)
+**官网:** [mtty.dev/mtty](https://mtty.dev/zh/mtty) · **文档:** [mtty.dev/docs/mtty](https://mtty.dev/zh/docs/mtty) · [版本发布](https://github.com/mttydev/mtty/releases) · [相关项目](#相关项目)
 
 [English](README.md) · **简体中文**
 
@@ -78,7 +78,7 @@
 
 更多可暂停的短演示：**[mtty.dev 上的 mtty](https://mtty.dev/zh/mtty#screens)**。
 
-> **项目状态 —— 预发布。** API 尚未稳定，最新版本见[发布页](https://github.com/oxdingzg/mtty/releases/latest)。macOS 是主要平台;
+> **项目状态 —— 预发布。** API 尚未稳定，最新版本见[发布页](https://github.com/mttydev/mtty/releases/latest)。macOS 是主要平台;
 > Windows 已在真实硬件上构建、测试并经 MTP 驱动(见 [`docs/WINDOWS-DEV.zh-CN.md`](docs/WINDOWS-DEV.zh-CN.md));
 > Linux 在 CI 中构建并通过测试,并已在真实的 GNOME/Wayland 桌面上验收(输入法、菜单、文件拖放、剪贴板、快捷键)。
 
@@ -89,8 +89,8 @@
 
 | 项目 | 是什么 | 链接 |
 |---|---|---|
-| **mtty**(本仓库) | AI 原生的终端与编辑器,以及其背后可嵌入的引擎 | [mtty.dev/mtty](https://mtty.dev/zh/mtty) · [oxdingzg/mtty](https://github.com/oxdingzg/mtty) |
-| **miao** | 在终端里运行的开源 AI 编程代理 | [mtty.dev/miao](https://mtty.dev/zh/miao) · [oxdingzg/miao](https://github.com/oxdingzg/miao) |
+| **mtty**(本仓库) | AI 原生的终端与编辑器,以及其背后可嵌入的引擎 | [mtty.dev/mtty](https://mtty.dev/zh/mtty) · [mttydev/mtty](https://github.com/mttydev/mtty) |
+| **miao** | 在终端里运行的开源 AI 编程代理 | [mtty.dev/miao](https://mtty.dev/zh/miao) · [mttydev/miao](https://github.com/mttydev/miao) |
 | **mtty.dev** | 两者的官网与文档站 | [mtty.dev](https://mtty.dev/zh/) |
 
 mtty 与 miao 是两个独立项目,任意一个都可以单独使用。在 mtty 的窗格里,miao 通过控制面上报自己的状态(工作中、
@@ -98,7 +98,7 @@ mtty 与 miao 是两个独立项目,任意一个都可以单独使用。在 mtty
 排队的提示。mtty 也为其他代理 CLI(Claude Code、Codex、OpenCode)提供状态钩子。
 
 有两个都叫 *miaotty* 的东西:本仓库的应用在 v0.0.5 及之前名为 `miaotty`(见上文的更名说明);而
-[oxdingzg/miaotty](https://github.com/oxdingzg/miaotty) 是另一个更早的个人 macOS 原型(基于 Ghostty 分叉),
+[mttydev/miaotty](https://github.com/mttydev/miaotty) 是另一个更早的个人 macOS 原型(基于 Ghostty 分叉),
 已不再开发,请改用 mtty。
 
 ## 功能
@@ -264,7 +264,7 @@ socket/命名管道传输(`src/lib.rs`)。
 ## 快速开始
 
 ```sh
-git clone https://github.com/oxdingzg/mtty.git
+git clone https://github.com/mttydev/mtty.git
 cd mtty
 
 # 构建并运行统一的原生终端

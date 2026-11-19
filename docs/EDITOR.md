@@ -89,7 +89,7 @@ preview pane; it closes with its editor and is kept in a saved session.
 
 This is block-level live editing. Inline token-level source reveal, advanced
 table controls, and the remaining writing features are tracked in the
-[Markdown roadmap](https://github.com/oxdingzg/mtty/issues/94).
+[Markdown roadmap](https://github.com/mttydev/mtty/issues/94).
 
 ## Language servers
 

@@ -110,9 +110,9 @@ The release job writes `latest.json` and attaches it to the release:
   "version": "0.1.0",
   "artifacts": {
     "macos-aarch64": {
-      "url": "https://github.com/oxdingzg/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip",
+      "url": "https://github.com/mttydev/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip",
       "sha256": "…",
-      "signature": "https://github.com/oxdingzg/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip.sig"
+      "signature": "https://github.com/mttydev/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip.sig"
     },
     "linux-x86_64": { "url": "…AppImage", "sha256": "…" },
     "windows-x86_64": { "url": "…msi", "sha256": "…" }
@@ -123,7 +123,7 @@ The release job writes `latest.json` and attaches it to the release:
 Point the app at it:
 
 ```toml
-update-check-url = "https://github.com/oxdingzg/mtty/releases/latest/download/latest.json"
+update-check-url = "https://github.com/mttydev/mtty/releases/latest/download/latest.json"
 ```
 
 Then *Settings → Check for Updates* reports the version, *Download Update* fetches
@@ -191,9 +191,9 @@ app). A real desktop session or a GPU is needed for that.
 Fetch the artifact, its `.sig`, and the published public key (`minisign.pub`):
 
 ```sh
-curl -fsSLO https://github.com/oxdingzg/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip
-curl -fsSLO https://github.com/oxdingzg/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip.sig
-curl -fsSLO https://github.com/oxdingzg/mtty/releases/download/v0.1.0/minisign.pub
+curl -fsSLO https://github.com/mttydev/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip
+curl -fsSLO https://github.com/mttydev/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip.sig
+curl -fsSLO https://github.com/mttydev/mtty/releases/download/v0.1.0/minisign.pub
 minisign -Vm mtty-macos-arm64.zip -p minisign.pub      # -> "Signature and comment signature verified"
 ```
 
@@ -217,7 +217,7 @@ codesign checks. Both the packaged app and installed app completed the desktop
 smoke, including native split-session migration and pane close/focus. This is
 local macOS evidence. The single-application pipeline subsequently published
 v0.0.4 successfully at `03848e4`:
-[run 36794301755](https://github.com/oxdingzg/mtty/actions/runs/36794301755)
+[run 36794301755](https://github.com/mttydev/mtty/actions/runs/36794301755)
 passed all four builds, AppImage/MSI packaging, package checks, assembly and
 detached-signature verification. Each new candidate must repeat full CI and the
 four-runner packaging rehearsal for its own commit.
@@ -239,7 +239,7 @@ checks do not establish interactive desktop behavior. The real-host checks above
 describe the earlier two-binary packages, not the new native-host payload.
 
 Release rehearsal (2026-09-30, `16b2230`):
-[run 36663466348](https://github.com/oxdingzg/mtty/actions/runs/36663466348)
+[run 36663466348](https://github.com/mttydev/mtty/actions/runs/36663466348)
 passed all four build jobs and assembly. The downloaded `release-assembled`
 artifact was independently checked: all five manifest entries matched their
 SHA-256, all nine detached signatures verified, both macOS archives contained two

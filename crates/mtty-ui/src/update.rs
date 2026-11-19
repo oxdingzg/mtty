@@ -505,7 +505,7 @@ t+gWHfmlkGM5SoMqXUkBvKwxms2sV0uR79Q4Xsnk42jdyFJ1AS1RuLQKXe0dIrQgW0flxW8/q6jndgI3
         if std::env::var_os("MTTY_UPDATE_TEST_REAL").is_none() {
             return;
         }
-        let url = "https://github.com/oxdingzg/mtty/releases/latest/download/latest.json";
+        let url = "https://github.com/mttydev/mtty/releases/latest/download/latest.json";
         let out = mtty_platform::background_command("curl")
             .args(["-fsSL", "--connect-timeout", "10", "--max-time", "60", url])
             .output()

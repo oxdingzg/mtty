@@ -192,5 +192,5 @@ An explicit `[lsp] enabled = false` disables the lot. See
 The rest of the documentation is in the repository: [installation](INSTALL.md),
 [view rules](VIEW-RULES.md), and the annotated
 [`config.example.toml`](config.example.toml). For anything else, open an issue
-on [oxdingzg/mtty](https://github.com/oxdingzg/mtty/issues), or write
+on [mttydev/mtty](https://github.com/mttydev/mtty/issues), or write
 to <contact@mtty.dev>.

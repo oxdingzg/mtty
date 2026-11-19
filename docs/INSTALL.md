@@ -7,7 +7,7 @@ There is one GUI executable and one CLI. See [identity and migration](APP-IDENTI
 
 ## Install a release
 
-Choose the latest package from [GitHub Releases](https://github.com/oxdingzg/mtty/releases/latest).
+Choose the latest package from [GitHub Releases](https://github.com/mttydev/mtty/releases/latest).
 
 | Platform | Package and first launch |
 |---|---|
