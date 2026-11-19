@@ -3930,7 +3930,8 @@ impl State {
                 tab.attention = None;
             }
             if let Some(pane) = tab.panes.iter_mut().find(|p| p.id == tab.active) {
-                let bytes = input::encode_paste(text, pane.term.screen().bracketed_paste());
+                let bytes =
+                    input::encode_terminal_paste(text, pane.term.screen().bracketed_paste());
                 pane.term.write(&bytes);
                 pane.scroll = 0;
             }
