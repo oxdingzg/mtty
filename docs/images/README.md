@@ -18,5 +18,5 @@ prompts are examples.
 
 Stills are at most 1600 px wide. GIFs are 960 px, 2 fps and under 180 KB each.
 The website uses responsive WebP stills and smaller MP4 demos with playback
-controls. See the [shared media notes](https://github.com/oxdingzg/mtty.dev/blob/main/docs/media.md)
+controls. See the [shared media notes](https://github.com/mttydev/mtty.dev/blob/main/docs/media.md)
 for capture guidelines and budgets.

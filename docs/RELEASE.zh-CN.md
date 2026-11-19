@@ -99,9 +99,9 @@ GitHub Secrets 是**只写**的:设了 `MINISIGN_SECRET_KEY` 之后,UI/API 都�
   "version": "0.1.0",
   "artifacts": {
     "macos-aarch64": {
-      "url": "https://github.com/oxdingzg/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip",
+      "url": "https://github.com/mttydev/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip",
       "sha256": "…",
-      "signature": "https://github.com/oxdingzg/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip.sig"
+      "signature": "https://github.com/mttydev/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip.sig"
     },
     "linux-x86_64": { "url": "…AppImage", "sha256": "…" },
     "windows-x86_64": { "url": "…msi", "sha256": "…" }
@@ -112,7 +112,7 @@ GitHub Secrets 是**只写**的:设了 `MINISIGN_SECRET_KEY` 之后,UI/API 都�
 让应用指向它:
 
 ```toml
-update-check-url = "https://github.com/oxdingzg/mtty/releases/latest/download/latest.json"
+update-check-url = "https://github.com/mttydev/mtty/releases/latest/download/latest.json"
 ```
 
 此后 *设置 → 检查更新* 会报告版本,*下载更新* 会获取当前平台产物并校验其 SHA-256
@@ -170,9 +170,9 @@ Vulkan(lavapipe)下 `wgpu` 报 `Invalid surface`(离屏软件 Vulkan 的限制,�
 下载产物、它的 `.sig`,以及发布的公钥(`minisign.pub`):
 
 ```sh
-curl -fsSLO https://github.com/oxdingzg/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip
-curl -fsSLO https://github.com/oxdingzg/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip.sig
-curl -fsSLO https://github.com/oxdingzg/mtty/releases/download/v0.1.0/minisign.pub
+curl -fsSLO https://github.com/mttydev/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip
+curl -fsSLO https://github.com/mttydev/mtty/releases/download/v0.1.0/mtty-macos-arm64.zip.sig
+curl -fsSLO https://github.com/mttydev/mtty/releases/download/v0.1.0/minisign.pub
 minisign -Vm mtty-macos-arm64.zip -p minisign.pub      # -> "Signature and comment signature verified"
 ```
 
@@ -190,7 +190,7 @@ shasum -a 256 mtty-macos-arm64.zip   # 与清单里的 "sha256" 比对
 clippy、格式检查及 4 项强制 release 性能预算通过。单一 native `mtty.app` 通过身份和
 codesign 检查；打包 app 和实际安装 app 均跑通桌面冒烟，包含 native 分屏会话迁移及
 pane 聚焦/关闭。这是本地 macOS 证据。后续单应用流水线已在 `03848e4` 成功发布
-v0.0.4：[运行 36794301755](https://github.com/oxdingzg/mtty/actions/runs/36794301755)
+v0.0.4：[运行 36794301755](https://github.com/mttydev/mtty/actions/runs/36794301755)
 的四个构建、AppImage/MSI 打包、包检查、汇总与分离签名验证全部通过。
 每个新候选版本仍须对其自身 commit 重跑完整 CI 和四 runner 打包演练。
 
@@ -207,7 +207,7 @@ v0.0.5 的改动与资源约束见[发布说明](releases/v0.0.5.zh-CN.md)和
 不代表新增 native host 的安装验证。
 
 发布演练(2026-09-30,`16b2230`):
-[运行 36663466348](https://github.com/oxdingzg/mtty/actions/runs/36663466348)
+[运行 36663466348](https://github.com/mttydev/mtty/actions/runs/36663466348)
 的四个构建作业与汇总作业全部通过。下载 `release-assembled` 后独立复核:
 五个清单条目的 SHA-256 全部匹配,九个分离签名全部通过;两种 macOS 压缩包均含两个 bundle,
 每个 bundle 有三个二进制和图标;Windows zip 与 Linux tar/deb 均包含三个二进制。

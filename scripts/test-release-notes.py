@@ -14,7 +14,7 @@ spec = importlib.util.spec_from_file_location(
 release_notes = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release_notes)
 
-REPO = "oxdingzg/mtty"
+REPO = "mttydev/mtty"
 TAG = "v9.9.9"
 BLOB = f"https://github.com/{REPO}/blob/{TAG}"
 

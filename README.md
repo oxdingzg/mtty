@@ -2,12 +2,12 @@
 
 **mtty — an AI-native terminal and editor for local and remote work, written in Rust.**
 
-[![CI](https://github.com/oxdingzg/mtty/actions/workflows/ci.yml/badge.svg)](https://github.com/oxdingzg/mtty/actions/workflows/ci.yml)
+[![CI](https://github.com/mttydev/mtty/actions/workflows/ci.yml/badge.svg)](https://github.com/mttydev/mtty/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange.svg)](Cargo.toml)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#requirements)
 
-**Website:** [mtty.dev/mtty](https://mtty.dev/mtty) · **Docs:** [mtty.dev/docs/mtty](https://mtty.dev/docs/mtty) · [Releases](https://github.com/oxdingzg/mtty/releases) · [Related projects](#related-projects)
+**Website:** [mtty.dev/mtty](https://mtty.dev/mtty) · **Docs:** [mtty.dev/docs/mtty](https://mtty.dev/docs/mtty) · [Releases](https://github.com/mttydev/mtty/releases) · [Related projects](#related-projects)
 
 **English** · [简体中文](README.zh-CN.md)
 
@@ -88,7 +88,7 @@ Recursive splits keep Git changes and an actual local HTTP server side by side:
 
 More short, controllable demos: **[mtty on mtty.dev](https://mtty.dev/mtty#screens)**.
 
-> **Project status — pre-release.** The API is not yet stable; see [Releases](https://github.com/oxdingzg/mtty/releases/latest) for the latest version. macOS is the primary platform. Windows is built, tested and driven over
+> **Project status — pre-release.** The API is not yet stable; see [Releases](https://github.com/mttydev/mtty/releases/latest) for the latest version. macOS is the primary platform. Windows is built, tested and driven over
 > MTP on real hardware (see [`docs/WINDOWS-DEV.md`](docs/WINDOWS-DEV.md)); Linux
 > builds and passes tests in CI and has been checked on a real GNOME/Wayland
 > desktop (input method, menus, file drops, clipboard, shortcuts).
@@ -99,8 +99,8 @@ More short, controllable demos: **[mtty on mtty.dev](https://mtty.dev/mtty#scree
 
 | Project | What it is | Links |
 |---|---|---|
-| **mtty** (this repository) | The AI-native terminal and editor, and the embeddable engines behind it | [mtty.dev/mtty](https://mtty.dev/mtty) · [oxdingzg/mtty](https://github.com/oxdingzg/mtty) |
-| **miao** | Open-source AI coding agent for the terminal | [mtty.dev/miao](https://mtty.dev/miao) · [oxdingzg/miao](https://github.com/oxdingzg/miao) |
+| **mtty** (this repository) | The AI-native terminal and editor, and the embeddable engines behind it | [mtty.dev/mtty](https://mtty.dev/mtty) · [mttydev/mtty](https://github.com/mttydev/mtty) |
+| **miao** | Open-source AI coding agent for the terminal | [mtty.dev/miao](https://mtty.dev/miao) · [mttydev/miao](https://github.com/mttydev/miao) |
 | **mtty.dev** | The website and documentation for both | [mtty.dev](https://mtty.dev) |
 
 mtty and miao are separate projects, and each works without the other. Inside
@@ -112,7 +112,7 @@ Codex, OpenCode).
 
 Two things named *miaotty*: the application in this repository was called
 `miaotty` up to v0.0.5 (see the rename note above), and
-[oxdingzg/miaotty](https://github.com/oxdingzg/miaotty) is a separate, earlier
+[mttydev/miaotty](https://github.com/mttydev/miaotty) is a separate, earlier
 personal macOS prototype (a Ghostty fork) that is no longer developed — use
 mtty instead.
 
@@ -358,7 +358,7 @@ socket/named-pipe transport in `mtty-mtp` (`src/lib.rs`).
 ## Getting started
 
 ```sh
-git clone https://github.com/oxdingzg/mtty.git
+git clone https://github.com/mttydev/mtty.git
 cd mtty
 
 # Build and run the terminal (either host)

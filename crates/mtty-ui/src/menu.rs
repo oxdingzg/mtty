@@ -262,7 +262,7 @@ pub fn menus(lang: Lang) -> Vec<(&'static str, Vec<Entry>)> {
             t(lang, "Help", "帮助"),
             vec![Entry::Link {
                 label: t(lang, "Documentation", "文档").to_string(),
-                url: "https://github.com/oxdingzg/mtty#readme",
+                url: "https://github.com/mttydev/mtty#readme",
             }],
         ),
     ]

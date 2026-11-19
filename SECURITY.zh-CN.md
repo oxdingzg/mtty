@@ -5,7 +5,7 @@
 ## 报告安全问题
 
 请使用 GitHub Security Advisory 的
-["Report a Vulnerability"](https://github.com/oxdingzg/mtty/security/advisories/new)
+["Report a Vulnerability"](https://github.com/mttydev/mtty/security/advisories/new)
 入口。在公开之前，它一直是私密的。
 
 你会收到一封回信说明后续如何推进，之后也会同步修复的进展。这里没有安全团队，也没有承诺的响应时限

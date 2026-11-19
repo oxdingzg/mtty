@@ -7,7 +7,7 @@ mtty(原名 miaotty)是原生 winit/wgpu 应用，只提供一个 GUI 主程序�
 
 ## 安装发布版
 
-从 [GitHub Releases](https://github.com/oxdingzg/mtty/releases/latest) 选择最新安装包。
+从 [GitHub Releases](https://github.com/mttydev/mtty/releases/latest) 选择最新安装包。
 
 | 平台 | 安装与首次启动 |
 |---|---|

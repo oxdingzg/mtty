@@ -7,7 +7,7 @@ version = "0.3.5"
 edition = "2021"
 rust-version = "1.80"
 license = "Apache-2.0"
-repository = "https://github.com/oxdingzg/mtty"
+repository = "https://github.com/mttydev/mtty"
 homepage = "https://mtty.dev/mtty"
 authors = ["mtty contributors"]
 

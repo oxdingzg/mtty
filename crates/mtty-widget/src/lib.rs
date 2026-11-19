@@ -278,7 +278,7 @@ mod appmenu {
                 }
                 None => {
                     if key == "documentation" {
-                        crate::open_external("https://github.com/oxdingzg/mtty#readme");
+                        crate::open_external("https://github.com/mttydev/mtty#readme");
                     }
                 }
             }
