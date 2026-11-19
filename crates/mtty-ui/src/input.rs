@@ -256,6 +256,24 @@ pub fn encode_image_paste(bracketed: bool) -> Vec<u8> {
     }
 }
 
+/// Paste bytes for a terminal pane.
+///
+/// Windows runs panes under ConPTY, which turns a bracketed paste into key
+/// presses: the markers are dropped and every line break arrives as Enter, so
+/// a chat TUI submits each line instead of holding the text. When the pane's
+/// application asked for bracketed paste, send the legacy Ctrl+V byte for a
+/// multi-line paste instead; the application reads the clipboard itself (miao
+/// does) and keeps the text as one draft. Single-line pastes, and applications
+/// without bracketed paste, keep the text so shells and editors see it
+/// unchanged.
+pub fn encode_terminal_paste(text: &str, bracketed: bool) -> Vec<u8> {
+    #[cfg(windows)]
+    if bracketed && text.contains(['\n', '\r']) {
+        return vec![0x16];
+    }
+    encode_paste(text, bracketed)
+}
+
 /// Encode a key press (special keys and modified keys; printable characters
 /// arrive through [`encode_text`]).
 pub fn encode_key(kind: KeyKind, mods: Modifiers, opts: EncodeOpts) -> Vec<u8> {
@@ -560,6 +578,25 @@ mod tests {
         assert_eq!(encode_image_paste(true), b"");
         #[cfg(not(windows))]
         assert_eq!(encode_image_paste(true), b"[200~[201~");
+    }
+
+    #[test]
+    fn a_multiline_paste_survives_conpty_as_ctrl_v() {
+        #[cfg(windows)]
+        {
+            assert_eq!(encode_terminal_paste("a\r\nb", true), b"\x16");
+            assert_eq!(encode_terminal_paste("a\nb", true), b"\x16");
+            assert_eq!(
+                encode_terminal_paste("one line", true),
+                b"[200~one line[201~"
+            );
+            assert_eq!(encode_terminal_paste("a\nb", false), b"a\rb");
+        }
+        #[cfg(not(windows))]
+        assert_eq!(
+            encode_terminal_paste("a\nb", true),
+            b"\x1b[200~a\rb\x1b[201~"
+        );
     }
 
     fn kitty(flags: u8) -> EncodeOpts {
