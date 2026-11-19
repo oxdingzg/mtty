@@ -3938,6 +3938,32 @@ impl State {
         self.window.request_redraw();
     }
 
+    /// A paste whose only payload is the image the host wrote for the pane.
+    /// Windows runs panes under ConPTY, which drops the empty bracketed-paste
+    /// pair; the legacy Ctrl+V byte is what actually reaches the application
+    /// and tells it to read the clipboard.
+    fn paste_image(&mut self) {
+        if self.read_only {
+            return;
+        }
+        // An image has no text to insert into an editor, and the terminal pane
+        // underneath is not the focused surface.
+        if self.active_editor_mut().is_some() {
+            return;
+        }
+        if let Some(tab) = self.tabs.get_mut(self.active_tab) {
+            if tab.attention == Some(Attention::Done) {
+                tab.attention = None;
+            }
+            if let Some(pane) = tab.panes.iter_mut().find(|p| p.id == tab.active) {
+                let bytes = input::encode_image_paste(pane.term.screen().bracketed_paste());
+                pane.term.write(&bytes);
+                pane.scroll = 0;
+            }
+        }
+        self.window.request_redraw();
+    }
+
     /// Menu-bar Copy/Paste/Select All arrive as commands, not key events: the
     /// macOS menu claims ⌘C/⌘V/⌘A before the view sees them. When a text field
     /// (editor, Composer, dialogs) has focus, hand the edit to egui instead of
@@ -3977,7 +4003,7 @@ impl State {
         let image = mtty_platform::clipboard_image();
         if let Some(image) = image {
             if std::fs::write(&path, image).is_ok() {
-                self.paste("");
+                self.paste_image();
                 return;
             }
         }
