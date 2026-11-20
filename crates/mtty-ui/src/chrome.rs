@@ -998,8 +998,9 @@ pub trait Chrome {
     fn agent_footer(&self) -> Vec<AgentFooterSeg> {
         Vec::new()
     }
-    /// The agent build the merged facts belong to.
-    fn agent_footer_version(&self) -> Option<String> {
+    /// The agent's own name over its build, as the status row shows it; the
+    /// agent reports both.
+    fn agent_footer_chip(&self) -> Option<String> {
         None
     }
     /// A press on the merged footer fact named `id`: the host synthesizes the
@@ -1159,7 +1160,7 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
     let status = host.status();
     let status_right = host.status_right();
     let agent_footer = host.agent_footer();
-    let agent_version = host.agent_footer_version();
+    let agent_chip = host.agent_footer_chip();
     let queue_items = host.queue();
     let saved_hosts = host.hosts();
     let mut host_connect: Option<usize> = None;
@@ -1566,10 +1567,11 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
                 // The active agent's facts ride the same row when it merged
                 // its strip here: each label is a press target, and the press
                 // is synthesized into the pane so the agent's own click
-                // handler acts on it. The agent build follows, muted.
-                if let Some(version) = &agent_version {
+                // handler acts on it. The agent names itself and its build
+                // with the facts, muted, and only when there are facts.
+                if let Some(chip) = &agent_chip {
                     ui.label(
-                        egui::RichText::new(format!("miao {version}"))
+                        egui::RichText::new(chip)
                             .size(11.0)
                             .color(bg_color(ch.muted)),
                     );
