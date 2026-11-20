@@ -779,6 +779,13 @@ fn panel_frame_stroke(margin: egui::Margin, fill: Rgb, stroke: Rgb) -> egui::Fra
         .inner_margin(margin)
 }
 
+/// One agent fact merged into the status row: a label the agent already
+/// localized, addressed by the id its press reports back.
+pub struct AgentFooterSeg {
+    pub id: String,
+    pub label: String,
+}
+
 /// One row in a details list (Files / Ports / Git / Outline): a single line
 /// with an icon, a label and right-aligned meta.
 pub struct ChromeItem {
@@ -984,6 +991,21 @@ pub trait Chrome {
     }
     /// The Remote Control chip was clicked.
     fn on_remote_chip(&mut self) {}
+
+    /// The active agent pane's merged footer facts, in the order the agent's
+    /// strip paints them. Empty when the pane runs no agent that reports a
+    /// footer, or one too old to merge.
+    fn agent_footer(&self) -> Vec<AgentFooterSeg> {
+        Vec::new()
+    }
+    /// The agent's own name over its build, as the status row shows it; the
+    /// agent reports both.
+    fn agent_footer_chip(&self) -> Option<String> {
+        None
+    }
+    /// A press on the merged footer fact named `id`: the host synthesizes the
+    /// mouse report so the agent's own click handler acts on it.
+    fn on_agent_footer_click(&mut self, id: &str) {}
     fn on_new_tab(&mut self) {}
     fn on_switch_tab(&mut self, i: usize) {}
     fn on_close_tab(&mut self, i: usize) {}
@@ -1137,12 +1159,15 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
     let details_list = host.details_list();
     let status = host.status();
     let status_right = host.status_right();
+    let agent_footer = host.agent_footer();
+    let agent_chip = host.agent_footer_chip();
     let queue_items = host.queue();
     let saved_hosts = host.hosts();
     let mut host_connect: Option<usize> = None;
     let mut queue_input = host.take_queue_input();
 
     let mut menu: Option<MenuId> = None;
+    let mut footer_click: Option<String> = None;
     let mut minimize_window = false;
     let mut maximize_window = false;
     let mut switch = None;
@@ -1539,6 +1564,34 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
                     );
                     ui.add_space(10.0);
                 }
+                // The active agent's facts ride the same row when it merged
+                // its strip here: each label is a press target, and the press
+                // is synthesized into the pane so the agent's own click
+                // handler acts on it. The agent names itself and its build
+                // with the facts, muted, and only when there are facts.
+                if let Some(chip) = &agent_chip {
+                    ui.label(
+                        egui::RichText::new(chip)
+                            .size(11.0)
+                            .color(bg_color(ch.muted)),
+                    );
+                    ui.add_space(10.0);
+                }
+                for seg in &agent_footer {
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new(&seg.label).size(11.0))
+                                .frame(false),
+                        )
+                        .clicked()
+                    {
+                        footer_click = Some(seg.id.clone());
+                    }
+                    ui.add_space(4.0);
+                }
+                if !agent_footer.is_empty() {
+                    ui.add_space(6.0);
+                }
                 ui.add_sized(
                     [ui.available_width(), CHROME_STATUS_H],
                     egui::Label::new(egui::RichText::new(&status).size(11.0)).truncate(),
@@ -1548,6 +1601,9 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
         });
 
     // Apply.
+    if let Some(id) = footer_click {
+        host.on_agent_footer_click(&id);
+    }
     host.set_queue_input(queue_input);
     if let Some(id) = menu {
         host.on_menu(id);
