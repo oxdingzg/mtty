@@ -2980,6 +2980,11 @@ impl State {
         let env = vec![
             ("MTTY_PANE_ID".to_string(), id.clone()),
             ("MIAOTTY_PANE_ID".to_string(), id.clone()),
+            // The merged-footer capability: only a host that answers a press
+            // on its own chrome with a synthesized mouse report may set it,
+            // so an agent under an older host keeps painting its strip.
+            ("MTTY_HOST_FOOTER".to_string(), "1".to_string()),
+            ("MIAOTTY_HOST_FOOTER".to_string(), "1".to_string()),
         ];
         if let Some(config) = self.host_config() {
             match Terminal::new_hosted(
@@ -6783,6 +6788,18 @@ impl State {
             ));
         }
         s
+    }
+
+    /// The active pane's merged-footer payload, when its agent published one
+    /// with facts on screen.
+    fn active_agent_footer(&self) -> Option<serde_json::Value> {
+        let tab = self.tabs.get(self.active_tab)?;
+        let pane = tab.panes.iter().find(|p| p.id == tab.active)?;
+        let footer = self.mtp.agent_for(&pane.id)?.get("footer")?.clone();
+        if footer.get("visible").and_then(serde_json::Value::as_bool) != Some(true) {
+            return None;
+        }
+        Some(footer)
     }
 }
 
@@ -20080,6 +20097,34 @@ fn mouse_report(
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// The (id, label) pairs a visible agent footer carries, in strip order. A
+/// segment missing either field is the agent's bug, not the host's: skip it.
+fn agent_footer_segments(footer: Option<&serde_json::Value>) -> Vec<(String, String)> {
+    footer
+        .and_then(|footer| footer.get("segs"))
+        .and_then(serde_json::Value::as_array)
+        .map(|segs| {
+            segs.iter()
+                .filter_map(|seg| {
+                    Some((
+                        seg.get("id")?.as_str()?.to_string(),
+                        seg.get("text")?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The agent build a visible footer names.
+fn agent_footer_version(footer: Option<&serde_json::Value>) -> Option<String> {
+    footer?
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .filter(|version| !version.is_empty())
+        .map(str::to_string)
+}
+
 /// A diagram slot: `None` while the external renderer runs, then its result.
 type MmdSlot = Option<Option<std::path::PathBuf>>;
 
@@ -21056,6 +21101,68 @@ impl chrome::Chrome for State {
     fn status(&self) -> String {
         self.status_text()
     }
+    fn agent_footer(&self) -> Vec<mtty_ui::chrome::AgentFooterSeg> {
+        agent_footer_segments(self.active_agent_footer().as_ref())
+            .into_iter()
+            .map(|(id, label)| mtty_ui::chrome::AgentFooterSeg { id, label })
+            .collect()
+    }
+    fn agent_footer_version(&self) -> Option<String> {
+        agent_footer_version(self.active_agent_footer().as_ref())
+    }
+    fn on_agent_footer_click(&mut self, id: &str) {
+        if self.read_only {
+            return;
+        }
+        let footer = self.active_agent_footer();
+        let Some((row, start, end)) = footer.as_ref().and_then(|footer| {
+            footer
+                .get("segs")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|segs| {
+                    segs.iter()
+                        .find(|seg| seg.get("id").and_then(serde_json::Value::as_str) == Some(id))
+                        .and_then(|seg| {
+                            Some((
+                                seg.get("row")?.as_u64()? as u16,
+                                seg.get("start")?.as_u64()? as u16,
+                                seg.get("end")?.as_u64()? as u16,
+                            ))
+                        })
+                })
+        }) else {
+            return;
+        };
+        if end <= start {
+            return;
+        }
+        // The wire carries the strip's 0-based cells; SGR reports are
+        // 1-based, like every press forwarded from the pointer.
+        let col = start + (end - start) / 2 + 1;
+        let row = row + 1;
+        let Some(tab) = self.tabs.get_mut(self.active_tab) else {
+            return;
+        };
+        let Some(pane) = tab.panes.iter_mut().find(|p| p.id == tab.active) else {
+            return;
+        };
+        // The agent reported clickable facts, so it enabled mouse reporting:
+        // a synthesized press at the segment's mid cell reaches the same
+        // handler a press on the strip it stopped painting would.
+        let Some((clicks, _, _, sgr)) = pane.term.screen().mouse_reporting() else {
+            return;
+        };
+        if !clicks {
+            return;
+        }
+        if let Some(press) = mouse_report(sgr, 0, true, false, col, row) {
+            pane.term.write(press.as_bytes());
+        }
+        if let Some(release) = mouse_report(sgr, 0, false, false, col, row) {
+            pane.term.write(release.as_bytes());
+        }
+        self.window.request_redraw();
+    }
     fn queue(&self) -> Vec<String> {
         // Show where each prompt goes; untargeted ones are sent by hand.
         self.prompt_queue
@@ -21339,6 +21446,57 @@ impl chrome::Chrome for State {
 
 #[cfg(test)]
 mod tests {
+    use super::{agent_footer_segments, agent_footer_version};
+
+    /// A merged-footer payload as miao reports it: visible facts with the
+    /// absolute cells a synthesized press lands on.
+    fn footer(segs: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "v": 1,
+            "visible": true,
+            "version": "0.4.3",
+            "segs": segs,
+        })
+    }
+
+    #[test]
+    fn the_footer_names_its_facts_in_strip_order() {
+        let footer = footer(serde_json::json!([
+            {"id": "approval", "text": "! auto", "row": 23, "start": 2, "end": 9},
+            {"id": "model", "text": "deepseek-v4", "row": 23, "start": 12, "end": 23},
+        ]));
+        assert_eq!(
+            agent_footer_segments(Some(&footer)),
+            vec![
+                ("approval".to_string(), "! auto".to_string()),
+                ("model".to_string(), "deepseek-v4".to_string()),
+            ]
+        );
+        assert_eq!(
+            agent_footer_version(Some(&footer)),
+            Some("0.4.3".to_string())
+        );
+    }
+
+    #[test]
+    fn a_hidden_or_broken_footer_carries_nothing() {
+        let mut hidden = footer(serde_json::json!([]));
+        hidden["visible"] = serde_json::json!(false);
+        assert_eq!(agent_footer_segments(Some(&hidden)), vec![]);
+        // A segment missing its id or text is the agent's bug: skip it, keep
+        // the rest.
+        let footer = footer(serde_json::json!([
+            {"row": 23, "start": 2, "end": 9},
+            {"id": "model", "text": "deepseek-v4", "row": 23, "start": 12, "end": 23},
+        ]));
+        assert_eq!(
+            agent_footer_segments(Some(&footer)),
+            vec![("model".to_string(), "deepseek-v4".to_string())]
+        );
+        assert_eq!(agent_footer_segments(None), vec![]);
+        assert_eq!(agent_footer_version(None), None);
+    }
+
     /// A pane over a byte pipe the test feeds chunk by chunk.
     fn piped_pane() -> (super::Pane, std::sync::mpsc::Sender<Vec<u8>>) {
         struct ChunkReader(std::sync::mpsc::Receiver<Vec<u8>>);
