@@ -20135,6 +20135,33 @@ fn footer_segment_span(footer: Option<&serde_json::Value>, id: &str) -> Option<(
         })
 }
 
+/// The keystrokes a press on one named segment sends into the pane: the
+/// agent's chord spelling from the wire (`ctrl+x m` — the leader byte, then
+/// the key). Spellings the parser cannot name are refused rather than typed
+/// blind into the operator's session.
+fn footer_segment_chord(footer: Option<&serde_json::Value>, id: &str) -> Option<Vec<u8>> {
+    let segs = footer?.get("segs")?.as_array()?;
+    let seg = segs
+        .iter()
+        .find(|seg| seg.get("id").and_then(serde_json::Value::as_str) == Some(id))?;
+    let spelling = seg.get("chord")?.as_str()?;
+    let mut bytes = Vec::new();
+    for token in spelling.split_whitespace() {
+        if let Some(key) = token
+            .strip_prefix("ctrl+")
+            .filter(|key| key.len() == 1 && key.as_bytes()[0].is_ascii_alphanumeric())
+            .map(|key| key.to_ascii_lowercase())
+        {
+            bytes.push(key.as_bytes()[0] - b'a' + 1);
+        } else if token.len() == 1 && token.as_bytes()[0].is_ascii_graphic() {
+            bytes.push(token.as_bytes()[0]);
+        } else {
+            return None;
+        }
+    }
+    (!bytes.is_empty() && bytes.len() <= 8).then_some(bytes)
+}
+
 /// The status-row chip for a visible footer: the agent's own name over its
 /// build, and nothing when the footer names no facts — a bare version label
 /// would read as chrome the row never carried.
@@ -21149,6 +21176,21 @@ impl chrome::Chrome for State {
         }
         let entry = self.active_agent_entry();
         let footer = entry.as_ref().and_then(|entry| entry.get("footer"));
+        // Chord-carrying agents (miao 0.4.5+) name the keystrokes themselves:
+        // they are written as-is, so the press works no matter which surface
+        // the facts render on — the agent's terminal may have reclaimed the
+        // strip's row for content entirely.
+        if let Some(chord) = footer.and_then(|footer| footer_segment_chord(Some(footer), id)) {
+            let Some(tab) = self.tabs.get_mut(self.active_tab) else {
+                return;
+            };
+            let Some(pane) = tab.panes.iter_mut().find(|p| p.id == tab.active) else {
+                return;
+            };
+            pane.term.write(&chord);
+            self.window.request_redraw();
+            return;
+        }
         let Some((row, start, end)) = footer
             .and_then(|footer| footer_segment_span(Some(footer), id))
             .and_then(|span| {
@@ -21502,8 +21544,10 @@ mod tests {
     #[test]
     fn the_footer_names_its_facts_in_strip_order() {
         let footer = footer(serde_json::json!([
-            {"id": "approval", "text": "! auto", "row": 23, "start": 2, "end": 9},
-            {"id": "model", "text": "deepseek-v4", "row": 23, "start": 12, "end": 23},
+            {"id": "approval", "text": "! auto", "row": 23, "start": 2, "end": 9,
+             "chord": "ctrl+x f"},
+            {"id": "model", "text": "deepseek-v4", "row": 23, "start": 12, "end": 23,
+             "chord": "ctrl+x m"},
         ]));
         assert_eq!(
             agent_footer_segments(Some(&footer)),
@@ -21526,6 +21570,29 @@ mod tests {
             Some((23, 12, 23))
         );
         assert_eq!(footer_segment_span(Some(&footer), "nope"), None);
+        // The chord spelling rides the segment: a press sends exactly those
+        // keystrokes into the pane.
+        assert_eq!(
+            footer_segment_chord(Some(&footer), "model"),
+            Some(vec![0x18, b'm'])
+        );
+        assert_eq!(footer_segment_chord(Some(&footer), "nope"), None);
+        assert_eq!(footer_segment_chord(None, "model"), None);
+    }
+
+    #[test]
+    fn an_unnameable_chord_is_refused_rather_than_typed_blind() {
+        let footer = footer(serde_json::json!([
+            {"id": "model", "text": "deepseek-v4", "row": 23, "start": 12, "end": 23,
+             "chord": "alt+x"},
+            {"id": "provider", "text": "volcengine", "row": 23, "start": 25, "end": 36,
+             "chord": "ctrl+shift+a"},
+        ]));
+        // A token the parser cannot name is refused for that segment...
+        assert_eq!(footer_segment_chord(Some(&footer), "model"), None);
+        // ...and a multi-stroke chord is refused too: only the plain leader
+        // spelling travels the wire.
+        assert_eq!(footer_segment_chord(Some(&footer), "provider"), None);
     }
 
     #[test]
