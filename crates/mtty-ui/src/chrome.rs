@@ -1577,7 +1577,12 @@ pub fn render(ctx: &egui::Context, host: &mut impl Chrome) {
                     );
                     ui.add_space(10.0);
                 }
-                for seg in &agent_footer {
+                // The row lays out right to left, so walking the facts in
+                // report order would put each one to the left of the last:
+                // the agent's row read backwards. Reverse them and the first
+                // fact the agent named still lands leftmost, where its own
+                // painted row put it.
+                for seg in agent_footer.iter().rev() {
                     if ui
                         .add(
                             egui::Button::new(egui::RichText::new(&seg.label).size(11.0))
